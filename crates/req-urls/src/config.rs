@@ -21,6 +21,7 @@ impl Config {
         let mut s = String::new();
         file.read_to_string(&mut s).map_err(|e| AnyError::wrap(e))?;
         let c: Config = serde_json::from_str(&s).map_err(|e| AnyError::wrap(e))?;
+        dbg!(&c);
         Ok(c)
     }
 }
