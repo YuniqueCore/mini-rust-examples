@@ -11,7 +11,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 pub async fn run(config: Config) -> AnyResult<()> {
     let urls = config.urls;
 
-    let concurancy = config.parallels.min(urls.len());
+    let concurancy = config.con.min(urls.len());
     let sem = Arc::new(Semaphore::new(concurancy));
     let client = reqwest::ClientBuilder::new()
         .timeout(Duration::from_millis(config.timeout))

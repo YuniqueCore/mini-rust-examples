@@ -8,7 +8,7 @@ use crate::AnyResult;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub urls: Vec<String>,
-    pub parallels: usize,
+    pub con: usize,
     pub timeout: u64,
 }
 

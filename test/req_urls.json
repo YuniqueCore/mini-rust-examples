@@ -1,0 +1,8 @@
+{
+    "urls": [
+        "www.baidu.com",
+        "www.google.com"
+    ],
+    "con": 5,
+    "timeout": 3000
+}
