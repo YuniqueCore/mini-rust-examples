@@ -24,10 +24,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25192ec22df6f39fae84483700a4dede76d9768aa51d328e98bda7e41881c6a6"
 
 [[package]]
-name = "async-net"
+name = "anyverr"
 version = "0.1.0"
 dependencies = [
  "anyerr",
+]
+
+[[package]]
+name = "async-net"
+version = "0.1.0"
+dependencies = [
+ "anyverr",
  "futures",
  "log",
  "reqwest",
@@ -855,7 +862,7 @@ dependencies = [
 name = "req-urls"
 version = "0.1.0"
 dependencies = [
- "anyerr",
+ "anyverr",
  "reqwest",
  "serde",
  "serde_json",
@@ -1172,6 +1179,16 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "tcp-echo"
+version = "0.1.0"
+dependencies = [
+ "anyverr",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

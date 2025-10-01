@@ -1,4 +1,5 @@
-use req_urls::{AnyResult, Config};
+use anyverr::AnyResult;
+use req_urls::Config;
 
 #[tokio::main]
 async fn main() -> AnyResult<()> {

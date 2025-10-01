@@ -1,13 +1,12 @@
 mod config;
-mod err;
 use std::{
     sync::Arc,
     time::{self, Duration},
 };
 
+use anyverr::{AnyError, AnyResult};
 // Include this in wherever you need `AnyError`.
 pub use config::*;
-pub use err::*;
 use reqwest::Client;
 use tokio::{sync::Semaphore, task::JoinSet};
 

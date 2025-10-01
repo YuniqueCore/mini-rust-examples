@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 log = { workspace = true }
-anyerr = { workspace = true }
+anyverr = { workspace = true }
 
 futures = { workspace = true }
 serde = { workspace = true }
@@ -19,6 +19,8 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.dependencies]
+anyverr = { path = "./crates/anyverr" }
+
 tokio = { version = "1", features = ["full"] }
 reqwest = "0.12.23"
 futures = "0.3"
@@ -26,4 +28,3 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 
 log = "0.4.28"
-anyerr = "0.1.1"

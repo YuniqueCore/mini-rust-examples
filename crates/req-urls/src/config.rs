@@ -1,6 +1,6 @@
 use std::{fs::OpenOptions, io::Read, path::PathBuf};
 
-use anyerr::AnyError;
+use anyverr::AnyError;
 use serde::{Deserialize, Serialize};
 
 use crate::AnyResult;
