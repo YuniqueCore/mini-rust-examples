@@ -1349,6 +1349,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "udp-echo"
+version = "0.1.0"
+dependencies = [
+ "anyverr",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,15 @@
+[package]
+name = "udp-echo"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "udp-echo"
+path = "src/main.rs"
+
+[dependencies]
+anyverr = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
