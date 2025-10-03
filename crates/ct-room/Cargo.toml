@@ -1,0 +1,15 @@
+[package]
+name = "ct-room"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ct-room"
+path = "src/main.rs"
+
+[dependencies]
+anyverr = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
