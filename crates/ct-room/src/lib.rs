@@ -1,4 +1,5 @@
 use std::{
+    io::IoSlice,
     net::SocketAddr,
     str::FromStr,
     sync::{self, Arc, LazyLock, Mutex, atomic::AtomicU64},
@@ -83,6 +84,10 @@ impl Room {
         self.msgs.push(msg);
     }
 
+    pub fn add_msgs(&mut self, msgs: &[Msg]) {
+        self.msgs.append(&mut msgs.to_vec());
+    }
+
     pub fn user_exists(&self, user: SocketAddr) -> bool {
         self.users.iter().any(|i| i.eq(&user))
     }
@@ -95,6 +100,9 @@ pub struct Msg {
 }
 
 impl Msg {
+    pub fn msg(&self) -> String {
+        Msg::to_string(self.user, self.data.clone())
+    }
     pub fn to_string(user: SocketAddr, data: String) -> String {
         format!("[{}]: {}", user, data)
     }
@@ -133,18 +141,33 @@ pub async fn run(config: Config) -> AnyResult<()> {
         let state_lock = app_state.clone();
         let mut state = state_lock.lock().expect("should be locked");
         let room_id = state.new_room(user);
+        let room = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)).unwrap();
+        room.add_user(user);
 
-        let (s_rx, s_tx) = stream.split();
+        let (s_rx, mut s_tx) = stream.split();
 
-        let mut buf = [0u8; 2048];
         loop {
-            let mut room_buf = Vec::with_capacity(100);
+            let mut msgs = Vec::with_capacity(100);
             const ROOM_CAPABILITY: usize = 5;
-            let msg_count = room_receiver
-                .recv_many(&mut room_buf, ROOM_CAPABILITY)
-                .await;
+            let msg_count = room_receiver.recv_many(&mut msgs, ROOM_CAPABILITY).await;
+            room.add_msgs(&mut msgs[..msg_count]);
+
+            let vec_msgs: Vec<String> = msgs.iter().map(|m| m.msg()).collect();
+            let vec_value: Vec<_> = vec_msgs
+                .iter()
+                .map(|i| IoSlice::new(i.as_bytes()))
+                .collect();
+
+            // TODO: should println msgs in each room users when msgs added into
+            match s_tx.write_vectored(&vec_value).await {
+                Ok(_) => {}
+                Err(e) => {
+                    eprint!("failed to write new received msgs: {e}");
+                }
+            };
         }
 
+        let mut buf = [0u8; 2048];
         handle_user_msg(user, room_sender, s_rx, s_tx, buf).await;
     }
 
