@@ -181,130 +181,135 @@ pub async fn run(config: Config) -> AnyResult<()> {
         };
 
         let (mut s_rx, mut s_tx) = stream.into_split();
-        {
-            let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
-            let _ = s_tx.write_all(welcome).await;
-        }
+        let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
+        let _ = s_tx.write_all(welcome).await;
 
-        loop {
-            let mut buf = [0u8; 128];
-            let len = s_rx.read(&mut buf).await.unwrap();
-            let input_str = String::from_utf8_lossy(&buf[..len]);
-            let action = match Action::from_str(&input_str) {
-                Ok(a) => a,
-                Err(e) => {
-                    let _ = s_tx.write_all(e.to_string().as_bytes()).await;
-                    continue;
-                }
-            };
-
-            let app_state = app_state.clone();
-            let room_state = match action {
-                Action::Create => handle_create(&action, app_state, user).await,
-                Action::Join(_) => handle_join(&action, app_state, user).await,
-                Action::Quit => handle_quit(&action, app_state, user).await,
-                Action::List => handle_list(&action, app_state, user).await,
-            };
-
-            if let Some(room_id) = room_state.room_id {
-                if let Some(mut room_receiver) = room_state.receiver {
-                    // write task
-                    let write_task = tokio::spawn(async move {
-                        while let Some(msg) = room_receiver.recv().await {
-                            if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
-                                eprintln!("write err to {}: {}", user, e);
-                                break;
-                            }
-                        }
-                    });
-                }
-            }
-        }
-
+        let app_state = app_state.clone();
         tokio::spawn(async move {
-            let (room_id, mut room_receiver) = {
-                let state_lock = app_state.clone();
-                let mut state = state_lock.lock().await;
-                // let room_id = state.new_room(user);
-                let room_id = state.new_one_room();
-                let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
-                if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-                    room.add_user(&user);
-                    room.update_sender(&user, room_sender);
-                }
-                drop(state);
-
-                (room_id, room_receiver)
-            };
-
-            // let (mut s_rx, mut s_tx) = stream.into_split();
-
-            // write task
-            let write_task = tokio::spawn(async move {
-                while let Some(msg) = room_receiver.recv().await {
-                    if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
-                        eprintln!("write err to {}: {}", user, e);
-                        break;
+            loop {
+                let mut buf = [0u8; 128];
+                let len = s_rx.read(&mut buf).await.unwrap();
+                let input_str = String::from_utf8_lossy(&buf[..len]);
+                let action = match Action::from_str(&input_str) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = s_tx.write_all(e.to_string().as_bytes()).await;
+                        continue;
                     }
-                }
-            });
+                };
 
-            // read task
-            let state_for_reader = Arc::clone(&app_state);
-            let read_task = tokio::spawn(async move {
-                let mut buf = [0u8; 2048];
+                let app_state = app_state.clone();
+                let room_state = match action {
+                    Action::Create => handle_create(&action, app_state, user).await,
+                    Action::Join(_) => handle_join(&action, app_state, user).await,
+                    Action::Quit => handle_quit(&action, app_state, user).await,
+                    Action::List => handle_list(&action, app_state, user).await,
+                };
 
-                loop {
-                    let len = match s_rx.read(&mut buf).await {
-                        Ok(0) => {
-                            println!("{user} closed");
-                            break;
-                        }
-                        Ok(n) => n,
-                        Err(e) => {
-                            eprintln!("failed to read data from:{user} - {e}");
-                            continue;
-                        }
-                    };
-
-                    let data = String::from_utf8_lossy(&buf[..len]).into_owned();
-
-                    let msg = Msg { user, data };
-
-                    let senders = {
-                        let mut state = state_for_reader.lock().await;
-                        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-                            room.senders.clone()
-                        } else {
-                            HashMap::new()
-                        }
-                    };
-
-                    for (_user, sender) in senders {
-                        match sender.send(msg.clone()) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                // let _ = s_tx
-                                //     .write_all(format!("Failed to send data to room: {e}").as_bytes())
-                                //     .await;
-                                eprintln!("Failed to send data to room: {e}");
+                let write_task = if let Some(room_id) = room_state.room_id {
+                    if let Some(mut room_receiver) = room_state.receiver {
+                        // write task
+                        Some(tokio::spawn(async move {
+                            while let Some(msg) = room_receiver.recv().await {
+                                if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
+                                    eprintln!("write err to {} in room: {}: {}", user, room_id, e);
+                                    break;
+                                }
                             }
-                        }
+                        }))
+                    } else {
+                        None
                     }
-                }
+                } else {
+                    None
+                };
 
-                // ON CONNECTION END: ensure we remove user & cleanup senders (short lock)
-                {
-                    let mut state = state_for_reader.lock().await;
-                    if let Some(room) = state.rooms.iter_mut().find(|r| r.id == room_id) {
-                        room.remove_user(&user);
-                        room.cleanup_closed_senders();
-                        // optionally remove empty room from state.rooms
-                    }
-                }
-            });
+                // tokio::spawn(async move {
+                //     let (room_id, mut room_receiver) = {
+                //         let state_lock = app_state.clone();
+                //         let mut state = state_lock.lock().await;
+                //         // let room_id = state.new_room(user);
+                //         let room_id = state.new_one_room();
+                //         let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+                //         if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+                //             room.add_user(&user);
+                //             room.update_sender(&user, room_sender);
+                //         }
+                //         drop(state);
 
-            let _ = tokio::join!(read_task, write_task);
+                //         (room_id, room_receiver)
+                //     };
+
+                //     // let (mut s_rx, mut s_tx) = stream.into_split();
+
+                //     // write task
+                //     let write_task = tokio::spawn(async move {
+                //         while let Some(msg) = room_receiver.recv().await {
+                //             if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
+                //                 eprintln!("write err to {}: {}", user, e);
+                //                 break;
+                //             }
+                //         }
+                //     });
+
+                //     // read task
+                //     let state_for_reader = Arc::clone(&app_state);
+                //     let read_task = tokio::spawn(async move {
+                //         let mut buf = [0u8; 2048];
+
+                //         loop {
+                //             let len = match s_rx.read(&mut buf).await {
+                //                 Ok(0) => {
+                //                     println!("{user} closed");
+                //                     break;
+                //                 }
+                //                 Ok(n) => n,
+                //                 Err(e) => {
+                //                     eprintln!("failed to read data from:{user} - {e}");
+                //                     continue;
+                //                 }
+                //             };
+
+                //             let data = String::from_utf8_lossy(&buf[..len]).into_owned();
+
+                //             let msg = Msg { user, data };
+
+                //             let senders = {
+                //                 let mut state = state_for_reader.lock().await;
+                //                 if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+                //                     room.senders.clone()
+                //                 } else {
+                //                     HashMap::new()
+                //                 }
+                //             };
+
+                //             for (_user, sender) in senders {
+                //                 match sender.send(msg.clone()) {
+                //                     Ok(()) => {}
+                //                     Err(e) => {
+                //                         // let _ = s_tx
+                //                         //     .write_all(format!("Failed to send data to room: {e}").as_bytes())
+                //                         //     .await;
+                //                         eprintln!("Failed to send data to room: {e}");
+                //                     }
+                //                 }
+                //             }
+                //         }
+
+                //         // ON CONNECTION END: ensure we remove user & cleanup senders (short lock)
+                //         {
+                //             let mut state = state_for_reader.lock().await;
+                //             if let Some(room) = state.rooms.iter_mut().find(|r| r.id == room_id) {
+                //                 room.remove_user(&user);
+                //                 room.cleanup_closed_senders();
+                //                 // optionally remove empty room from state.rooms
+                //             }
+                //         }
+                //     });
+
+                //     let _ = tokio::join!(read_task, write_task);
+                // });
+            }
         });
     }
 
