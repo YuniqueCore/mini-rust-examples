@@ -4,7 +4,7 @@ use std::{
     sync::{self, Arc, LazyLock, atomic::AtomicU64},
 };
 
-use anyverr::AnyResult;
+use anyverr::{AnyError, AnyResult};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -70,7 +70,6 @@ pub struct Room {
     users: Vec<SocketAddr>, // ipAddr as the user idenitity
     msgs: Vec<Msg>,
     senders: Vec<mpsc::UnboundedSender<Msg>>,
-    // recver: mpsc::UnboundedReceiver<Msg>,
 }
 
 impl Room {
@@ -184,6 +183,8 @@ pub async fn run(config: Config) -> AnyResult<()> {
             };
 
             let (mut s_rx, mut s_tx) = stream.into_split();
+            let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
+            let _ = s_tx.write_all(welcome).await;
 
             // write task
             let write_task = tokio::spawn(async move {
@@ -214,6 +215,7 @@ pub async fn run(config: Config) -> AnyResult<()> {
                     };
 
                     let data = String::from_utf8_lossy(&buf[..len]).into_owned();
+
                     let msg = Msg { user, data };
 
                     let senders = {
@@ -254,4 +256,46 @@ pub async fn run(config: Config) -> AnyResult<()> {
     }
 
     Ok(())
+}
+
+type RoomID = u64;
+
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    Create,
+    Join(RoomID),
+    Quit,
+    List,
+}
+
+impl FromStr for Action {
+    type Err = AnyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parse_join_str = |s: &str| {
+            if s.starts_with(".join") {
+                let mut parts = s.splitn(2, ' ');
+                parts.next();
+                if let Some(num) = parts.next() {
+                    return u64::from_str(num).map_err(|e| AnyError::wrap(e));
+                }
+            }
+
+            Err(AnyError::quick(
+                "No such action, available actions\n.create\n.join [room_id]\n.quic\n.list",
+                anyverr::ErrKind::ValueValidation,
+            ))
+        };
+
+        match s.to_lowercase().trim() {
+            s if s == ".create" => Ok(Action::Create),
+            s if s.starts_with(".join") => parse_join_str(s).map(|n| Action::Join(n)),
+            s if s == ".quic" => Ok(Action::Quit),
+            s if s == ".list" => Ok(Action::List),
+            _ => Err(AnyError::quick(
+                "No such action, available actions\n.create\n.join room_id\n.quic\n.list",
+                anyverr::ErrKind::ValueValidation,
+            )),
+        }
+    }
 }
