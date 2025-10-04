@@ -1,16 +1,18 @@
 use std::{
-    io::IoSlice,
     net::SocketAddr,
     str::FromStr,
-    sync::{self, Arc, LazyLock, Mutex, atomic::AtomicU64},
+    sync::{self, Arc, LazyLock, atomic::AtomicU64},
 };
 
-use anyverr::{AnyError, AnyResult};
+use anyverr::AnyResult;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::{broadcast, mpsc},
+    sync::{
+        Mutex,
+        mpsc::{self, UnboundedSender},
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,6 +39,13 @@ impl AppState {
         }
     }
 
+    pub fn new_one_room(&mut self) -> u64 {
+        let room = Room::new_latest();
+        let id = room.id;
+        self.rooms.push(room);
+        id
+    }
+
     pub fn room_exists(&self, room_id: u64) -> bool {
         self.rooms.iter().any(|r| r.id.eq(&room_id))
     }
@@ -60,24 +69,38 @@ pub struct Room {
     id: u64,
     users: Vec<SocketAddr>, // ipAddr as the user idenitity
     msgs: Vec<Msg>,
-    // sender:Arc<mpsc::UnboundedSender<Msg>>,
+    senders: Vec<mpsc::UnboundedSender<Msg>>,
     // recver: mpsc::UnboundedReceiver<Msg>,
 }
 
 impl Room {
     pub fn new() -> Self {
-        // let (sender, recver) = mpsc::unbounded_channel::<Msg>();
         Self {
             id: fetch_latest_room_id(),
             users: vec![],
             msgs: vec![],
-            // sender: Arc::new(sender),
-            // recver,
+            senders: vec![], // recver,
+        }
+    }
+
+    pub fn new_latest() -> Self {
+        Self {
+            id: ROOM_ID.load(sync::atomic::Ordering::Relaxed),
+            users: vec![],
+            msgs: vec![],
+            senders: vec![], // recver,
         }
     }
 
     pub fn add_user(&mut self, user: SocketAddr) {
         self.users.push(user);
+    }
+
+    pub fn remove_user(&mut self, user: &SocketAddr) {
+        self.users.retain(|u| u.ne(user));
+    }
+    pub fn add_sender(&mut self, sender: UnboundedSender<Msg>) {
+        self.senders.push(sender);
     }
 
     pub fn add_msg(&mut self, msg: Msg) {
@@ -90,6 +113,11 @@ impl Room {
 
     pub fn user_exists(&self, user: SocketAddr) -> bool {
         self.users.iter().any(|i| i.eq(&user))
+    }
+
+    // 清理已关闭的 senders
+    fn cleanup_closed_senders(&mut self) {
+        self.senders.retain(|s| !s.is_closed());
     }
 }
 
@@ -104,7 +132,7 @@ impl Msg {
         Msg::to_string(self.user, self.data.clone())
     }
     pub fn to_string(user: SocketAddr, data: String) -> String {
-        format!("[{}]: {}", user, data)
+        format!("[{}]: {}\n", user, data)
     }
 }
 
@@ -130,79 +158,100 @@ pub async fn run(config: Config) -> AnyResult<()> {
     let app_state = Arc::new(Mutex::new(AppState { rooms: vec![] }));
 
     loop {
-        let (mut stream, user) = match tcp_listener.accept().await {
+        let (stream, user) = match tcp_listener.accept().await {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("Failed to accept: {}", e);
                 break;
             }
         };
-        let (room_sender, mut room_receiver) = mpsc::unbounded_channel::<Msg>();
-        let state_lock = app_state.clone();
-        let mut state = state_lock.lock().expect("should be locked");
-        let room_id = state.new_room(user);
-        let room = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)).unwrap();
-        room.add_user(user);
 
-        let (s_rx, mut s_tx) = stream.split();
-
-        loop {
-            let mut msgs = Vec::with_capacity(100);
-            const ROOM_CAPABILITY: usize = 5;
-            let msg_count = room_receiver.recv_many(&mut msgs, ROOM_CAPABILITY).await;
-            room.add_msgs(&mut msgs[..msg_count]);
-
-            let vec_msgs: Vec<String> = msgs.iter().map(|m| m.msg()).collect();
-            let vec_value: Vec<_> = vec_msgs
-                .iter()
-                .map(|i| IoSlice::new(i.as_bytes()))
-                .collect();
-
-            // TODO: should println msgs in each room users when msgs added into
-            match s_tx.write_vectored(&vec_value).await {
-                Ok(_) => {}
-                Err(e) => {
-                    eprint!("failed to write new received msgs: {e}");
+        let app_state = app_state.clone();
+        tokio::spawn(async move {
+            let (room_id, mut room_receiver) = {
+                let state_lock = app_state.clone();
+                let mut state = state_lock.lock().await;
+                // let room_id = state.new_room(user);
+                let room_id = state.new_one_room();
+                let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+                if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+                    room.add_user(user);
+                    room.add_sender(room_sender);
                 }
-            };
-        }
+                drop(state);
 
-        let mut buf = [0u8; 2048];
-        handle_user_msg(user, room_sender, s_rx, s_tx, buf).await;
+                (room_id, room_receiver)
+            };
+
+            let (mut s_rx, mut s_tx) = stream.into_split();
+
+            // write task
+            let write_task = tokio::spawn(async move {
+                while let Some(msg) = room_receiver.recv().await {
+                    if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
+                        eprintln!("write err to {}: {}", user, e);
+                        break;
+                    }
+                }
+            });
+
+            // read task
+            let state_for_reader = Arc::clone(&app_state);
+            let read_task = tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+
+                loop {
+                    let len = match s_rx.read(&mut buf).await {
+                        Ok(0) => {
+                            println!("{user} closed");
+                            break;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            eprintln!("failed to read data from:{user} - {e}");
+                            continue;
+                        }
+                    };
+
+                    let data = String::from_utf8_lossy(&buf[..len]).into_owned();
+                    let msg = Msg { user, data };
+
+                    let senders = {
+                        let mut state = state_for_reader.lock().await;
+                        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+                            room.senders.clone()
+                        } else {
+                            vec![]
+                        }
+                    };
+
+                    for sender in senders {
+                        match sender.send(msg.clone()) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                // let _ = s_tx
+                                //     .write_all(format!("Failed to send data to room: {e}").as_bytes())
+                                //     .await;
+                                eprintln!("Failed to send data to room: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // ON CONNECTION END: ensure we remove user & cleanup senders (short lock)
+                {
+                    let mut state = state_for_reader.lock().await;
+                    if let Some(room) = state.rooms.iter_mut().find(|r| r.id == room_id) {
+                        room.remove_user(&user);
+                        room.cleanup_closed_senders();
+                        // optionally remove empty room from state.rooms
+                    }
+                }
+            });
+
+            let _ = tokio::join!(read_task, write_task);
+        });
     }
 
     Ok(())
-}
-
-async fn handle_user_msg(
-    user: SocketAddr,
-    room_sender: mpsc::UnboundedSender<Msg>,
-    mut s_rx: tokio::net::tcp::ReadHalf<'_>,
-    mut s_tx: tokio::net::tcp::WriteHalf<'_>,
-    mut buf: [u8; 2048],
-) {
-    loop {
-        let len = match s_rx.read(&mut buf).await {
-            Ok(0) => {
-                println!("{user} closed");
-                break;
-            }
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("failed to read data from:{user} - {e}");
-                continue;
-            }
-        };
-
-        let data = String::from_utf8_lossy(&buf[..len]).into_owned();
-        let msg = Msg { user, data };
-        match room_sender.send(msg) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = s_tx
-                    .write_all(format!("Failed to send data to room: {e}").as_bytes())
-                    .await;
-            }
-        }
-    }
 }
