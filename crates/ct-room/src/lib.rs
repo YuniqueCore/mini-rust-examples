@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     str::FromStr,
     sync::{self, Arc, LazyLock, atomic::AtomicU64},
@@ -11,7 +12,7 @@ use tokio::{
     net::TcpListener,
     sync::{
         Mutex,
-        mpsc::{self, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
     },
 };
 
@@ -28,7 +29,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new_room(&mut self, user: SocketAddr) -> u64 {
+    pub fn new_room(&mut self) -> u64 {
+        let room = Room::new();
+        let id = room.id;
+        self.rooms.push(room);
+        id
+    }
+    pub fn last_room(&mut self, user: SocketAddr) -> u64 {
         if let Some(room_id) = self.user_exists(user) {
             room_id
         } else {
@@ -69,7 +76,7 @@ pub struct Room {
     id: u64,
     users: Vec<SocketAddr>, // ipAddr as the user idenitity
     msgs: Vec<Msg>,
-    senders: Vec<mpsc::UnboundedSender<Msg>>,
+    senders: HashMap<SocketAddr, mpsc::UnboundedSender<Msg>>,
 }
 
 impl Room {
@@ -78,7 +85,7 @@ impl Room {
             id: fetch_latest_room_id(),
             users: vec![],
             msgs: vec![],
-            senders: vec![], // recver,
+            senders: HashMap::new(), // recver,
         }
     }
 
@@ -87,19 +94,21 @@ impl Room {
             id: ROOM_ID.load(sync::atomic::Ordering::Relaxed),
             users: vec![],
             msgs: vec![],
-            senders: vec![], // recver,
+            senders: HashMap::new(), // recver,
         }
     }
 
-    pub fn add_user(&mut self, user: SocketAddr) {
-        self.users.push(user);
+    pub fn add_user(&mut self, user: &SocketAddr) {
+        self.users.push(user.clone());
     }
 
     pub fn remove_user(&mut self, user: &SocketAddr) {
         self.users.retain(|u| u.ne(user));
+        self.senders.remove(user);
     }
-    pub fn add_sender(&mut self, sender: UnboundedSender<Msg>) {
-        self.senders.push(sender);
+
+    pub fn update_sender(&mut self, user: &SocketAddr, sender: UnboundedSender<Msg>) {
+        self.senders.insert(user.clone(), sender);
     }
 
     pub fn add_msg(&mut self, msg: Msg) {
@@ -116,7 +125,12 @@ impl Room {
 
     // 清理已关闭的 senders
     fn cleanup_closed_senders(&mut self) {
-        self.senders.retain(|s| !s.is_closed());
+        let mut users = vec![];
+        for (user, sender) in self.senders.iter_mut() {
+            if sender.is_closed() {
+                users.push(user);
+            }
+        }
     }
 }
 
@@ -165,6 +179,32 @@ pub async fn run(config: Config) -> AnyResult<()> {
             }
         };
 
+        let (mut s_rx, mut s_tx) = stream.into_split();
+        let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
+        let _ = s_tx.write_all(welcome).await;
+
+        let app_state = app_state.clone();
+
+        loop {
+            let mut buf = [0u8; 128];
+            let len = s_rx.read(&mut buf).await.unwrap();
+            let input_str = String::from_utf8_lossy(&buf[..len]);
+            let action = match Action::from_str(&input_str) {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = s_tx.write_all(e.to_string().as_bytes()).await;
+                    continue;
+                }
+            };
+
+            let res = match action {
+                Action::Create => handle_create(&action, app_state.clone(), user, &mut s_tx).await,
+                Action::Join(_) => handle_join(&action, app_state.clone(), user, &mut s_tx).await,
+                Action::Quit => handle_quit(&action, app_state.clone(), user, &mut s_tx).await,
+                Action::List => handle_list(&action, app_state.clone(), user, &mut s_tx).await,
+            };
+        }
+
         let app_state = app_state.clone();
         tokio::spawn(async move {
             let (room_id, mut room_receiver) = {
@@ -174,17 +214,15 @@ pub async fn run(config: Config) -> AnyResult<()> {
                 let room_id = state.new_one_room();
                 let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
                 if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-                    room.add_user(user);
-                    room.add_sender(room_sender);
+                    room.add_user(&user);
+                    room.update_sender(&user, room_sender);
                 }
                 drop(state);
 
                 (room_id, room_receiver)
             };
 
-            let (mut s_rx, mut s_tx) = stream.into_split();
-            let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
-            let _ = s_tx.write_all(welcome).await;
+            // let (mut s_rx, mut s_tx) = stream.into_split();
 
             // write task
             let write_task = tokio::spawn(async move {
@@ -223,11 +261,11 @@ pub async fn run(config: Config) -> AnyResult<()> {
                         if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
                             room.senders.clone()
                         } else {
-                            vec![]
+                            HashMap::new()
                         }
                     };
 
-                    for sender in senders {
+                    for (_user, sender) in senders {
                         match sender.send(msg.clone()) {
                             Ok(()) => {}
                             Err(e) => {
@@ -256,6 +294,108 @@ pub async fn run(config: Config) -> AnyResult<()> {
     }
 
     Ok(())
+}
+
+async fn handle_list(
+    action: &Action,
+    app_state: Arc<Mutex<AppState>>,
+    _user: SocketAddr,
+    s_tx: &mut tokio::net::tcp::OwnedWriteHalf,
+) -> (Option<u64>, Option<UnboundedReceiver<Msg>>) {
+    let state = app_state.lock().await;
+    if *action == Action::List {
+        let rooms_id = state
+            .rooms
+            .iter()
+            .map(|r| r.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = s_tx.write_all(rooms_id.as_bytes()).await;
+
+        return (None, None);
+    }
+
+    (None, None)
+}
+
+async fn handle_join(
+    action: &Action,
+    app_state: Arc<Mutex<AppState>>,
+    user: SocketAddr,
+    s_tx: &mut tokio::net::tcp::OwnedWriteHalf,
+) -> (Option<u64>, Option<UnboundedReceiver<Msg>>) {
+    if let Action::Join(room_id) = action {
+        let mut state = app_state.lock().await;
+        if state.room_exists(*room_id) {
+            let room = state.rooms.iter_mut().find(|r| r.id.eq(room_id));
+            if room.is_none() {
+                let _ = s_tx.write_all(b"No such room").await;
+            }
+            let room = room.unwrap();
+            if room.user_exists(user) {
+                let _ = s_tx.write_all(b"You have already in the room").await;
+            }
+            let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+            room.add_user(&user);
+            room.update_sender(&user, room_sender);
+
+            return (Some(*room_id), Some(room_receiver));
+        }
+    }
+
+    (None, None)
+}
+
+async fn handle_create(
+    action: &Action,
+    state: Arc<Mutex<AppState>>,
+    user: SocketAddr,
+    s_tx: &mut tokio::net::tcp::OwnedWriteHalf,
+) -> (Option<u64>, Option<UnboundedReceiver<Msg>>) {
+    let state_lock = state.lock().await;
+    let mut state = state_lock;
+    if *action == Action::Create {
+        let room_id = state.new_room();
+        let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+            room.add_user(&user);
+            room.update_sender(&user, room_sender);
+        }
+        drop(state);
+
+        let _ = s_tx
+            .write_all(format!("successfully create the room: {room_id}").as_bytes())
+            .await;
+
+        (Some(room_id), Some(room_receiver))
+    } else {
+        (None, None)
+    }
+}
+
+async fn handle_quit(
+    action: &Action,
+    state: Arc<Mutex<AppState>>,
+    user: SocketAddr,
+    s_tx: &mut tokio::net::tcp::OwnedWriteHalf,
+) -> (Option<u64>, Option<UnboundedReceiver<Msg>>) {
+    let state_lock = state.lock().await;
+    let mut state = state_lock;
+    if *action == Action::Create {
+        let room_id = state.new_room();
+        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+            room.cleanup_closed_senders();
+        }
+        drop(state);
+
+        let _ = s_tx
+            .write_all(format!("successfully create the room: {room_id}").as_bytes())
+            .await;
+
+        (Some(room_id), None)
+    } else {
+        (None, None)
+    }
 }
 
 type RoomID = u64;
