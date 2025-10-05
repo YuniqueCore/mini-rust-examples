@@ -126,10 +126,17 @@ impl Room {
     // 清理已关闭的 senders
     fn cleanup_closed_senders(&mut self) {
         let mut users = vec![];
-        for (user, sender) in self.senders.iter_mut() {
+        self.senders.retain(|user, sender| {
             if sender.is_closed() {
-                users.push(user);
+                users.push(user.clone());
+                false
+            } else {
+                true
             }
+        });
+
+        for user in users {
+            self.remove_user(&user);
         }
     }
 }
