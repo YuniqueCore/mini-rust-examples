@@ -1,15 +1,14 @@
 use std::{
     collections::HashMap,
-    hash::RandomState,
     net::SocketAddr,
     str::FromStr,
-    sync::{self, Arc, LazyLock, atomic::AtomicU64, mpsc::Receiver},
+    sync::{self, Arc, LazyLock, atomic::AtomicU64},
 };
 
 use anyverr::{AnyError, AnyResult};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::{
         Mutex,
@@ -77,7 +76,7 @@ pub struct Room {
     id: u64,
     users: Vec<SocketAddr>, // ipAddr as the user idenitity
     msgs: Vec<Msg>,
-    senders: HashMap<SocketAddr, mpsc::UnboundedSender<Msg>>,
+    senders: HashMap<SocketAddr, Arc<mpsc::UnboundedSender<Msg>>>,
 }
 
 impl Room {
@@ -108,7 +107,7 @@ impl Room {
         self.senders.remove(user);
     }
 
-    pub fn update_sender(&mut self, user: &SocketAddr, sender: UnboundedSender<Msg>) {
+    pub fn update_sender(&mut self, user: &SocketAddr, sender: Arc<UnboundedSender<Msg>>) {
         self.senders.insert(user.clone(), sender);
     }
 
@@ -184,132 +183,100 @@ pub async fn run(config: Config) -> AnyResult<()> {
         let welcome = b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quic/.list";
         let _ = s_tx.write_all(welcome).await;
 
-        let app_state = app_state.clone();
-        tokio::spawn(async move {
-            loop {
-                let mut buf = [0u8; 128];
-                let len = s_rx.read(&mut buf).await.unwrap();
-                let input_str = String::from_utf8_lossy(&buf[..len]);
-                let action = match Action::from_str(&input_str) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        let _ = s_tx.write_all(e.to_string().as_bytes()).await;
-                        continue;
-                    }
-                };
-
-                let app_state = app_state.clone();
-                let room_state = match action {
-                    Action::Create => handle_create(&action, app_state, user).await,
-                    Action::Join(_) => handle_join(&action, app_state, user).await,
-                    Action::Quit => handle_quit(&action, app_state, user).await,
-                    Action::List => handle_list(&action, app_state, user).await,
-                };
-
-                let write_task = if let Some(room_id) = room_state.room_id {
-                    if let Some(mut room_receiver) = room_state.receiver {
-                        // write task
-                        Some(tokio::spawn(async move {
-                            while let Some(msg) = room_receiver.recv().await {
-                                if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
-                                    eprintln!("write err to {} in room: {}: {}", user, room_id, e);
-                                    break;
-                                }
-                            }
-                        }))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // tokio::spawn(async move {
-                //     let (room_id, mut room_receiver) = {
-                //         let state_lock = app_state.clone();
-                //         let mut state = state_lock.lock().await;
-                //         // let room_id = state.new_room(user);
-                //         let room_id = state.new_one_room();
-                //         let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
-                //         if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-                //             room.add_user(&user);
-                //             room.update_sender(&user, room_sender);
-                //         }
-                //         drop(state);
-
-                //         (room_id, room_receiver)
-                //     };
-
-                //     // let (mut s_rx, mut s_tx) = stream.into_split();
-
-                //     // write task
-                //     let write_task = tokio::spawn(async move {
-                //         while let Some(msg) = room_receiver.recv().await {
-                //             if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
-                //                 eprintln!("write err to {}: {}", user, e);
-                //                 break;
-                //             }
-                //         }
-                //     });
-
-                //     // read task
-                //     let state_for_reader = Arc::clone(&app_state);
-                //     let read_task = tokio::spawn(async move {
-                //         let mut buf = [0u8; 2048];
-
-                //         loop {
-                //             let len = match s_rx.read(&mut buf).await {
-                //                 Ok(0) => {
-                //                     println!("{user} closed");
-                //                     break;
-                //                 }
-                //                 Ok(n) => n,
-                //                 Err(e) => {
-                //                     eprintln!("failed to read data from:{user} - {e}");
-                //                     continue;
-                //                 }
-                //             };
-
-                //             let data = String::from_utf8_lossy(&buf[..len]).into_owned();
-
-                //             let msg = Msg { user, data };
-
-                //             let senders = {
-                //                 let mut state = state_for_reader.lock().await;
-                //                 if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-                //                     room.senders.clone()
-                //                 } else {
-                //                     HashMap::new()
-                //                 }
-                //             };
-
-                //             for (_user, sender) in senders {
-                //                 match sender.send(msg.clone()) {
-                //                     Ok(()) => {}
-                //                     Err(e) => {
-                //                         // let _ = s_tx
-                //                         //     .write_all(format!("Failed to send data to room: {e}").as_bytes())
-                //                         //     .await;
-                //                         eprintln!("Failed to send data to room: {e}");
-                //                     }
-                //                 }
-                //             }
-                //         }
-
-                //         // ON CONNECTION END: ensure we remove user & cleanup senders (short lock)
-                //         {
-                //             let mut state = state_for_reader.lock().await;
-                //             if let Some(room) = state.rooms.iter_mut().find(|r| r.id == room_id) {
-                //                 room.remove_user(&user);
-                //                 room.cleanup_closed_senders();
-                //                 // optionally remove empty room from state.rooms
-                //             }
-                //         }
-                //     });
-
-                //     let _ = tokio::join!(read_task, write_task);
-                // });
+        let mut buf = [0u8; 128];
+        let len = s_rx.read(&mut buf).await.unwrap();
+        let input_str = String::from_utf8_lossy(&buf[..len]);
+        let action = match Action::from_str(&input_str) {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = s_tx.write_all(e.to_string().as_bytes()).await;
+                continue;
             }
+        };
+
+        let app_state_for_action = app_state.clone();
+        let room_state = match action {
+            Action::Create => handle_create(&action, app_state_for_action, user).await,
+            Action::Join(_) => handle_join(&action, app_state_for_action, user).await,
+            Action::Quit => handle_quit(&action, app_state_for_action, user).await,
+            Action::List => handle_list(&action, app_state_for_action, user).await,
+        };
+
+        if let Some(msg) = room_state.message {
+            let _ = s_tx.write_all(msg.as_bytes()).await;
+        }
+
+        if room_state.room_id.is_none() || room_state.receiver.is_none() {
+            continue;
+        }
+
+        let room_id = room_state.room_id.unwrap();
+        let mut room_receiver = room_state.receiver.unwrap();
+        let room_sender = room_state.sender.unwrap();
+
+        let app_state_for_reader = app_state.clone();
+        tokio::spawn(async move {
+            // write task
+            let write_task = tokio::spawn(async move {
+                while let Some(msg) = room_receiver.recv().await {
+                    if let Err(e) = s_tx.write_all(msg.msg().as_bytes()).await {
+                        eprintln!("write err to {} in room: {}: {}", user, room_id, e);
+                        break;
+                    }
+                }
+            });
+
+            let read_task = tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                loop {
+                    let len = match s_rx.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) => {
+                            if let Err(e) = room_sender.send(Msg {
+                                user,
+                                data: e.to_string(),
+                            }) {
+                                eprintln!("error on reading: {e}");
+                            };
+                            break;
+                        }
+                    };
+
+                    let data = String::from_utf8_lossy(&buf[..len]).into_owned();
+                    let msg = Msg { user, data };
+                    let senders = {
+                        let mut state = app_state_for_reader.lock().await;
+                        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
+                            room.senders.clone()
+                        } else {
+                            HashMap::new()
+                        }
+                    };
+                    for (_user, sender) in senders {
+                        match sender.send(msg.clone()) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                // let _ = s_tx
+                                //     .write_all(format!("Failed to send data to room: {e}").as_bytes())
+                                //     .await;
+                                eprintln!("Failed to send data to room: {e}");
+                            }
+                        }
+                    }
+                }
+
+                //  ON CONNECTION END: ensure we remove user & cleanup senders (short lock)
+                {
+                    let mut state = app_state_for_reader.lock().await;
+                    if let Some(room) = state.rooms.iter_mut().find(|r| r.id == room_id) {
+                        room.remove_user(&user);
+                        room.cleanup_closed_senders();
+                    }
+                }
+            });
+
+            let _ = tokio::join!(write_task, read_task);
         });
     }
 
@@ -320,6 +287,7 @@ pub async fn run(config: Config) -> AnyResult<()> {
 struct RoomState {
     room_id: Option<u64>,
     receiver: Option<UnboundedReceiver<Msg>>,
+    sender: Option<Arc<UnboundedSender<Msg>>>,
     message: Option<String>,
 }
 
@@ -328,6 +296,7 @@ impl RoomState {
         Self {
             room_id: None,
             receiver: None,
+            sender: None,
             message: None,
         }
     }
@@ -335,16 +304,22 @@ impl RoomState {
         Self {
             room_id,
             receiver: None,
+            sender: None,
             message: None,
         }
     }
 
-    pub fn receiver(mut self, receiver: Option<UnboundedReceiver<Msg>>) -> Self {
+    pub fn with_receiver(mut self, receiver: Option<UnboundedReceiver<Msg>>) -> Self {
         self.receiver = receiver;
         self
     }
 
-    pub fn message(mut self, message: Option<String>) -> Self {
+    pub fn with_sender(mut self, sender: Option<Arc<UnboundedSender<Msg>>>) -> Self {
+        self.sender = sender;
+        self
+    }
+
+    pub fn with_message(mut self, message: Option<String>) -> Self {
         self.message = message;
         self
     }
@@ -364,7 +339,7 @@ async fn handle_list(
             .collect::<Vec<_>>()
             .join(", ");
 
-        return RoomState::new(None).message(Some(rooms_id));
+        return RoomState::new(None).with_message(Some(rooms_id));
     }
 
     RoomState::empty()
@@ -388,12 +363,14 @@ async fn handle_join(
                 msg.push_str("You have already in the room");
             }
             let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+            let arc_room_sender = Arc::new(room_sender);
             room.add_user(&user);
-            room.update_sender(&user, room_sender);
+            room.update_sender(&user, arc_room_sender.clone());
 
             return RoomState::new(Some(*room_id))
-                .receiver(Some(room_receiver))
-                .message(Some(msg));
+                .with_receiver(Some(room_receiver))
+                .with_sender(Some(arc_room_sender))
+                .with_message(Some(msg));
         }
     }
 
@@ -410,15 +387,17 @@ async fn handle_create(
     if *action == Action::Create {
         let room_id = state.new_room();
         let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
+        let arc_room_sender = Arc::new(room_sender);
         if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
             room.add_user(&user);
-            room.update_sender(&user, room_sender);
+            room.update_sender(&user, arc_room_sender.clone());
         }
         drop(state);
 
         RoomState::new(Some(room_id))
-            .receiver(Some(room_receiver))
-            .message(Some(format!("successfully create the room: {room_id}")))
+            .with_receiver(Some(room_receiver))
+            .with_sender(Some(arc_room_sender))
+            .with_message(Some(format!("successfully create the room: {room_id}")))
     } else {
         RoomState::empty()
     }
@@ -427,15 +406,18 @@ async fn handle_create(
 async fn handle_quit(action: &Action, state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
     let state_lock = state.lock().await;
     let mut state = state_lock;
-    if *action == Action::Create {
-        let room_id = state.new_room();
-        if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&room_id)) {
-            room.remove_user(&user);
+    if *action == Action::Quit {
+        let mut room_id = 0;
+        if let Some(inner_room_id) = state.user_exists(user) {
+            if let Some(room) = state.rooms.iter_mut().find(|r| r.id.eq(&inner_room_id)) {
+                room.remove_user(&user);
+                room_id = inner_room_id;
+            }
         }
         drop(state);
 
         RoomState::new(Some(room_id))
-            .message(Some(format!("successfully create the room: {room_id}")))
+            .with_message(Some(format!("successfully quit the room: {room_id}")))
     } else {
         RoomState::empty()
     }
