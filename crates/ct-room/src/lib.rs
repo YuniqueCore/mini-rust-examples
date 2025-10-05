@@ -8,7 +8,7 @@ use std::{
 use anyverr::{AnyError, AnyResult};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::{TcpListener, TcpStream},
     sync::{
         Mutex,
@@ -16,13 +16,13 @@ use tokio::{
     },
 };
 
+// Config, AppState, Room, Msg 等结构体和 impl 保持不变
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     ip: String,
     port: u16,
 }
 
-// ## 优化：使用 HashMap 存储房间，提高查找效率
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub rooms: HashMap<u64, Room>,
@@ -58,7 +58,6 @@ fn fetch_latest_room_id() -> u64 {
 pub struct Room {
     id: u64,
     users: Vec<SocketAddr>,
-    msgs: Vec<Msg>,
     senders: HashMap<SocketAddr, Arc<mpsc::UnboundedSender<Msg>>>,
 }
 
@@ -67,7 +66,6 @@ impl Room {
         Self {
             id: fetch_latest_room_id(),
             users: vec![],
-            msgs: vec![],
             senders: HashMap::new(),
         }
     }
@@ -89,23 +87,6 @@ impl Room {
 
     pub fn user_exists(&self, user: SocketAddr) -> bool {
         self.users.iter().any(|i| i == &user)
-    }
-
-    // 当一个用户的 sender 关闭时，同时从 users 列表和 senders 哈希图中移除
-    fn cleanup_closed_senders(&mut self) {
-        let mut closed_users = vec![];
-        self.senders.retain(|user, sender| {
-            if sender.is_closed() {
-                closed_users.push(*user);
-                false
-            } else {
-                true
-            }
-        });
-
-        for user in closed_users {
-            self.users.retain(|u| u != &user);
-        }
     }
 }
 
@@ -133,17 +114,16 @@ impl Default for Config {
     }
 }
 
-// ## 修复：主循环不再阻塞
 pub async fn run(config: Config) -> AnyResult<()> {
     let socket_addr_str = format!("{}:{}", config.ip, config.port);
-    let socket_addr = SocketAddr::from_str(&socket_addr_str).map_err(|e| AnyError::wrap(e))?;
+    let socket_addr = SocketAddr::from_str(&socket_addr_str).map_err(AnyError::wrap)?;
     let tcp_listener = TcpListener::bind(socket_addr)
         .await
-        .map_err(|e| AnyError::wrap(e))?;
+        .map_err(AnyError::wrap)?;
 
     println!(
         "tcp listen on {}",
-        tcp_listener.local_addr().map_err(|e| AnyError::wrap(e))?
+        tcp_listener.local_addr().map_err(AnyError::wrap)?
     );
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
@@ -153,88 +133,105 @@ pub async fn run(config: Config) -> AnyResult<()> {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("Failed to accept: {}", e);
-                continue; // 不要让单个错误导致整个服务器崩溃
+                continue;
             }
         };
 
         let app_state = app_state.clone();
-        // 为每个连接生成一个独立的任务，防止阻塞主循环
         tokio::spawn(async move {
             println!("New connection from: {}", user);
             if let Err(e) = handle_connection(stream, user, app_state).await {
                 eprintln!("Error handling connection for {}: {}", user, e);
             }
+            println!("Connection closed for: {}", user);
         });
     }
 }
 
-// ## 新增：将单个连接的完整逻辑封装到此函数中
+// ## 重构：handle_connection 现在是“大厅”，负责循环处理指令
 async fn handle_connection(
     stream: TcpStream,
     user: SocketAddr,
     app_state: Arc<Mutex<AppState>>,
 ) -> AnyResult<()> {
     let (mut s_rx, mut s_tx) = io::split(stream);
-    let welcome =
-        b"Welcome to sp chat room, some useful instruments: .create/.join [room_id]/.quit/.list\n";
-    s_tx.write_all(welcome)
-        .await
-        .map_err(|e| AnyError::wrap(e))?;
+    let welcome = b"Welcome! You are in the lobby.\nCommands: .create, .join [id], .list, .quit\n";
+    s_tx.write_all(welcome).await.map_err(AnyError::wrap)?;
 
-    let mut buf = [0u8; 128];
-    let len = s_rx.read(&mut buf).await.map_err(|e| AnyError::wrap(e))?;
-    if len == 0 {
-        // 客户端直接断开连接
-        return Ok(());
-    }
-    let input_str = String::from_utf8_lossy(&buf[..len]);
-    let action = match Action::from_str(&input_str) {
-        Ok(a) => a,
-        Err(e) => {
-            s_tx.write_all(e.to_string().as_bytes())
+    // 大厅循环 (Lobby Loop)
+    loop {
+        let mut buf = [0u8; 128];
+        let len = match s_rx.read(&mut buf).await {
+            Ok(0) => return Ok(()), // 客户端断开
+            Ok(n) => n,
+            Err(e) => return Err(AnyError::wrap(e)),
+        };
+
+        let input_str = String::from_utf8_lossy(&buf[..len]);
+        let action = match Action::from_str(&input_str) {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("Invalid command: {}\n", e);
+                s_tx.write_all(msg.as_bytes())
+                    .await
+                    .map_err(AnyError::wrap)?;
+                continue; // 继续等待下一个指令
+            }
+        };
+
+        // 用户执行 .quit 指令，直接退出
+        if action == Action::Quit {
+            handle_quit(app_state.clone(), user).await;
+            s_tx.write_all(b"Goodbye!\n")
                 .await
-                .map_err(|e| AnyError::wrap(e))?;
+                .map_err(AnyError::wrap)?;
             return Ok(());
         }
-    };
 
-    let room_state = match action {
-        Action::Create => handle_create(app_state.clone(), user).await,
-        Action::Join(_) => handle_join(&action, app_state.clone(), user).await,
-        Action::Quit => handle_quit(app_state.clone(), user).await,
-        Action::List => handle_list(app_state.clone()).await,
-    };
+        let room_state = match action {
+            Action::Create => handle_create(app_state.clone(), user).await,
+            Action::Join(_) => handle_join(&action, app_state.clone(), user).await,
+            Action::List => handle_list(app_state.clone()).await,
+            Action::Quit => unreachable!(), // 上面已经处理过
+        };
 
-    if let Some(msg) = room_state.message {
-        s_tx.write_all(msg.as_bytes())
-            .await
-            .map_err(|e| AnyError::wrap(e))?;
+        if let Some(msg) = room_state.message {
+            s_tx.write_all(msg.as_bytes())
+                .await
+                .map_err(AnyError::wrap)?;
+        }
+
+        // 如果指令是 .create 或 .join 且成功，则 room_state 会包含必要信息
+        // 此时跳出大厅循环，进入聊天会话
+        if let (Some(id), Some(rx), Some(tx)) =
+            (room_state.room_id, room_state.receiver, room_state.sender)
+        {
+            return run_chat_session(s_rx, s_tx, user, app_state, id, rx, tx).await;
+        }
+        // 对于 .list 等指令，则继续在大厅循环中等待下一个指令
     }
+}
 
-    // 对于 .list, .quit 等非聊天室指令，到此结束连接
-    if room_state.room_id.is_none() || room_state.receiver.is_none() {
-        return Ok(());
-    }
-
-    let room_id = room_state.room_id.unwrap();
-    let mut room_receiver = room_state.receiver.unwrap();
-    let room_sender = room_state.sender.unwrap();
-
-    // -- 进入聊天循环 --
-
-    // 写任务：从 channel 接收消息并发送给客户端
+// 将聊天会话逻辑独立成一个函数
+async fn run_chat_session(
+    mut s_rx: ReadHalf<TcpStream>,
+    mut s_tx: WriteHalf<TcpStream>,
+    user: SocketAddr,
+    app_state: Arc<Mutex<AppState>>,
+    room_id: u64,
+    mut room_receiver: UnboundedReceiver<Msg>,
+    room_sender: Arc<UnboundedSender<Msg>>,
+) -> AnyResult<()> {
+    // 写任务
     let write_task = tokio::spawn(async move {
         while let Some(msg) = room_receiver.recv().await {
-            // 不把自己发的消息再发回给自己
-            // if msg.user != user {
             if s_tx.write_all(msg.msg().as_bytes()).await.is_err() {
                 break;
             }
-            // }
         }
     });
 
-    // 读任务：从客户端读取消息并广播到 channel
+    // 读任务
     let read_task = tokio::spawn(async move {
         let mut buf = [0u8; 2048];
         loop {
@@ -255,7 +252,6 @@ async fn handle_connection(
 
             let senders = {
                 let state = app_state.lock().await;
-                // 使用 .get() 高效查找
                 state
                     .rooms
                     .get(&room_id)
@@ -263,7 +259,6 @@ async fn handle_connection(
             };
 
             for sender in senders.values() {
-                // 如果发送失败，说明对方可能已掉线，忽略错误
                 let _ = sender.send(msg.clone());
             }
         }
@@ -273,7 +268,6 @@ async fn handle_connection(
         if let Some(room) = state.rooms.get_mut(&room_id) {
             println!("{} disconnected from room {}", user, room_id);
             room.remove_user(&user);
-            // 可以在这里广播用户离开的消息
             let leave_msg = Msg {
                 user,
                 data: "has left the room.".to_string(),
@@ -285,7 +279,6 @@ async fn handle_connection(
     });
 
     let _ = tokio::join!(write_task, read_task);
-
     Ok(())
 }
 
@@ -298,7 +291,6 @@ struct RoomState {
 }
 
 impl RoomState {
-    // 构造器方法保持不变...
     pub fn empty() -> Self {
         Self {
             room_id: None,
@@ -315,24 +307,21 @@ impl RoomState {
             message: None,
         }
     }
-
     pub fn with_receiver(mut self, receiver: Option<UnboundedReceiver<Msg>>) -> Self {
         self.receiver = receiver;
         self
     }
-
     pub fn with_sender(mut self, sender: Option<Arc<UnboundedSender<Msg>>>) -> Self {
         self.sender = sender;
         self
     }
-
     pub fn with_message(mut self, message: Option<String>) -> Self {
         self.message = message;
         self
     }
 }
 
-// ## 优化：Action Handler 使用 HashMap API
+// handle_* 系列函数基本保持不变，只是做了微调
 async fn handle_list(app_state: Arc<Mutex<AppState>>) -> RoomState {
     let state = app_state.lock().await;
     let rooms_id = state
@@ -357,16 +346,17 @@ async fn handle_join(
     user: SocketAddr,
 ) -> RoomState {
     if let Action::Join(room_id) = action {
-        let mut state = app_state.lock().await;
+        let mut app_state = app_state.lock().await;
 
-        if let Some(room) = state.rooms.get_mut(room_id) {
-            if room.user_exists(user) {
-                return RoomState::empty()
-                    .with_message(Some("You are already in the room.\n".to_string()));
-            }
+        if app_state.user_exists(user).is_some() {
+            return RoomState::empty().with_message(Some(
+                "You are already in a room. Use .quit to leave first.\n".to_string(),
+            ));
+        }
 
-            let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
-            let arc_room_sender = Arc::new(room_sender);
+        if let Some(room) = app_state.rooms.get_mut(room_id) {
+            let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+            let arc_tx = Arc::new(tx);
 
             let join_msg = Msg {
                 user,
@@ -377,12 +367,15 @@ async fn handle_join(
             }
 
             room.add_user(&user);
-            room.update_sender(&user, arc_room_sender.clone());
+            room.update_sender(&user, arc_tx.clone());
 
-            let success_msg = format!("Successfully joined room: {}\n", room_id);
+            let success_msg = format!(
+                "Successfully joined room: {}. You can start chatting.\n",
+                room_id
+            );
             return RoomState::new(Some(*room_id))
-                .with_receiver(Some(room_receiver))
-                .with_sender(Some(arc_room_sender))
+                .with_receiver(Some(rx))
+                .with_sender(Some(arc_tx))
                 .with_message(Some(success_msg));
         } else {
             return RoomState::empty().with_message(Some("Room not found.\n".to_string()));
@@ -391,42 +384,45 @@ async fn handle_join(
     RoomState::empty()
 }
 
-async fn handle_create(state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
-    let mut state = state.lock().await;
+async fn handle_create(app_state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
+    let mut state = app_state.lock().await;
+
+    if state.user_exists(user).is_some() {
+        return RoomState::empty().with_message(Some(
+            "You are already in a room. Use .quit to leave first.\n".to_string(),
+        ));
+    }
+
     let room_id = state.new_room();
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let arc_tx = Arc::new(tx);
 
-    let (room_sender, room_receiver) = mpsc::unbounded_channel::<Msg>();
-    let arc_room_sender = Arc::new(room_sender);
-
-    // 刚创建的 room 一定存在，可以直接 unwrap
     let room = state.rooms.get_mut(&room_id).unwrap();
     room.add_user(&user);
-    room.update_sender(&user, arc_room_sender.clone());
+    room.update_sender(&user, arc_tx.clone());
 
-    let msg = format!("Successfully created room: {}\n", room_id);
+    let msg = format!(
+        "Successfully created and joined room: {}. You can start chatting.\n",
+        room_id
+    );
     RoomState::new(Some(room_id))
-        .with_receiver(Some(room_receiver))
-        .with_sender(Some(arc_room_sender))
+        .with_receiver(Some(rx))
+        .with_sender(Some(arc_tx))
         .with_message(Some(msg))
 }
 
-// ## 修复：`handle_quit` 逻辑
-async fn handle_quit(state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
-    let mut state = state.lock().await;
-
+async fn handle_quit(app_state: Arc<Mutex<AppState>>, user: SocketAddr) {
+    let mut state = app_state.lock().await;
     if let Some(room_id) = state.user_exists(user) {
         if let Some(room) = state.rooms.get_mut(&room_id) {
             room.remove_user(&user);
-            let msg = format!("Successfully quit room: {}\n", room_id);
-            return RoomState::new(Some(room_id)).with_message(Some(msg));
+            println!("User {} quit from room {}", user, room_id);
         }
     }
-
-    RoomState::empty().with_message(Some("You are not in any room.\n".to_string()))
 }
 
+// Action enum 和 FromStr impl 保持不变
 type RoomID = u64;
-
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Create,
@@ -434,10 +430,8 @@ pub enum Action {
     Quit,
     List,
 }
-
 impl FromStr for Action {
     type Err = AnyError;
-    // from_str 逻辑保持不变...
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parse_join_str = |s: &str| {
             let mut parts = s.trim().splitn(2, ' ');
