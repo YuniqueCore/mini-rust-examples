@@ -16,6 +16,9 @@ use tokio::{
     },
 };
 
+static SYSTEM_ADMIN: LazyLock<SocketAddr> =
+    std::sync::LazyLock::new(|| "1.1.1.1:1111".parse().unwrap());
+
 // Config, AppState, Room, Msg 等结构体和 impl 保持不变
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -225,8 +228,11 @@ async fn run_chat_session(
     // 写任务
     let write_task = tokio::spawn(async move {
         while let Some(msg) = room_receiver.recv().await {
-            if s_tx.write_all(msg.msg().as_bytes()).await.is_err() {
-                break;
+            if msg.user != user {
+                // 忽略来自自己的消息
+                if s_tx.write_all(msg.msg().as_bytes()).await.is_err() {
+                    break;
+                }
             }
         }
     });
@@ -240,8 +246,8 @@ async fn run_chat_session(
                 Ok(n) => n,
                 Err(e) => {
                     let _ = room_sender.send(Msg {
-                        user,
-                        data: e.to_string(),
+                        user: *SYSTEM_ADMIN,
+                        data: format!("[ERROR]: {e}"),
                     });
                     break;
                 }
