@@ -211,19 +211,17 @@ async fn handle_connection(
         b"Welcome! You are in the lobby.\nCommands: .create, .join [id], .list, .quit\n",
     )
     .await
-    .map_err(|e| AnyError::wrap(e))?;
+    .map_err(AnyError::wrap)?;
 
     // 初始状态为 Lobby
     let mut state = State::Lobby;
 
     loop {
+        let app_state = app_state.clone();
         state = match state {
-            State::Lobby => {
-                handle_lobby_state(&mut s_rx, &mut s_tx, user, app_state.clone()).await?
-            }
+            State::Lobby => handle_lobby_state(&mut s_rx, &mut s_tx, user, app_state).await?,
             State::Chatting(session) => {
-                handle_chatting_state(session, &mut s_rx, &mut s_tx, user, app_state.clone())
-                    .await?
+                handle_chatting_state(session, &mut s_rx, &mut s_tx, user, app_state).await?
             }
             State::Shutdown => {
                 // 如果任何状态处理器要求关机，则跳出循环
@@ -255,7 +253,7 @@ async fn handle_lobby_state(
         Err(e) => {
             s_tx.write_all(format!("Invalid command: {}\n", e).as_bytes())
                 .await
-                .map_err(|e| AnyError::wrap(e))?;
+                .map_err(AnyError::wrap)?;
             return Ok(State::Lobby); // 保持在大厅状态
         }
     };
@@ -263,13 +261,13 @@ async fn handle_lobby_state(
     if action == Action::Quit {
         s_tx.write_all(b"Goodbye!\n")
             .await
-            .map_err(|e| AnyError::wrap(e))?;
+            .map_err(AnyError::wrap)?;
         return Ok(State::Shutdown); // 转换到关机状态
     }
 
     let room_state = match action {
         Action::Create => handle_create(app_state, user).await,
-        Action::Join(_) => handle_join(&action, app_state, user).await,
+        Action::Join(room_id) => handle_join(app_state, user, room_id).await,
         Action::List => handle_list(app_state).await,
         Action::Quit => unreachable!(),
     };
@@ -277,7 +275,7 @@ async fn handle_lobby_state(
     if let Some(msg) = room_state.message {
         s_tx.write_all(msg.as_bytes())
             .await
-            .map_err(|e| AnyError::wrap(e))?;
+            .map_err(AnyError::wrap)?;
     }
 
     if let (Some(room_id), Some(receiver)) = (room_state.room_id, room_state.receiver) {
@@ -322,8 +320,8 @@ async fn handle_chatting_state(
                     let data = String::from_utf8_lossy(&read_buf[..len]);
                     if data.trim() == ".quit" {
                         handle_quit(app_state, user, session.room_id).await;
-                        s_tx.write_all(b"You have left the room. Returning to lobby.\n").await.map_err(|e| AnyError::wrap(e))?;
-                     return   Ok(State::Lobby); // 转换回大厅状态
+                        s_tx.write_all(b"You have left the room. Returning to lobby.\n").await.map_err(AnyError::wrap)?;
+                     return Ok(State::Lobby); // 转换回大厅状态
                     }
 
                     let msg = Msg { user, data: data.into_owned() };
@@ -398,44 +396,36 @@ async fn handle_list(app_state: Arc<Mutex<AppState>>) -> RoomState {
     RoomState::empty().with_message(Some(msg))
 }
 
-async fn handle_join(
-    action: &Action,
-    app_state: Arc<Mutex<AppState>>,
-    user: SocketAddr,
-) -> RoomState {
-    if let Action::Join(room_id) = action {
-        let mut state = app_state.lock().await;
-        if state.user_exists(user).is_some() {
-            return RoomState::empty().with_message(Some(
-                "You are already in a room. Use .quit to leave first.\n".to_string(),
-            ));
-        }
-        if let Some(room) = state.rooms.get_mut(room_id) {
-            let (tx, rx) = mpsc::unbounded_channel::<Msg>();
-            let arc_tx = Arc::new(tx);
-            let join_msg = Msg {
-                user,
-                data: "has joined the room.\n".to_string(),
-            };
-            for sender in room.senders.values() {
-                let _ = sender.send(join_msg.clone());
-            }
-            room.add_user(&user);
-            room.update_sender(&user, arc_tx.clone());
-            let success_msg = format!(
-                "Successfully joined room: {}. You can start chatting.\n",
-                room_id
-            );
-            return RoomState::new(Some(*room_id))
-                .with_receiver(Some(rx))
-                .with_sender(Some(arc_tx))
-                .with_message(Some(success_msg));
-        } else {
-            return RoomState::empty().with_message(Some("Room not found.\n".to_string()));
-        }
+async fn handle_join(app_state: Arc<Mutex<AppState>>, user: SocketAddr, room_id: u64) -> RoomState {
+    let mut state = app_state.lock().await;
+    if state.user_exists(user).is_some() {
+        return RoomState::empty().with_message(Some(
+            "You are already in a room. Use .quit to leave first.\n".to_string(),
+        ));
     }
-
-    RoomState::empty()
+    if let Some(room) = state.rooms.get_mut(&room_id) {
+        let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+        let arc_tx = Arc::new(tx);
+        let join_msg = Msg {
+            user,
+            data: "has joined the room.\n".to_string(),
+        };
+        for sender in room.senders.values() {
+            let _ = sender.send(join_msg.clone());
+        }
+        room.add_user(&user);
+        room.update_sender(&user, arc_tx.clone());
+        let success_msg = format!(
+            "Successfully joined room: {}. You can start chatting.\n",
+            room_id
+        );
+        return RoomState::new(Some(room_id))
+            .with_receiver(Some(rx))
+            .with_sender(Some(arc_tx))
+            .with_message(Some(success_msg));
+    } else {
+        return RoomState::empty().with_message(Some("Room not found.\n".to_string()));
+    }
 }
 
 async fn handle_create(app_state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
