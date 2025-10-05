@@ -16,15 +16,23 @@ use tokio::{
     },
 };
 
-static SYSTEM_ADMIN: LazyLock<SocketAddr> =
-    std::sync::LazyLock::new(|| "1.1.1.1:1111".parse().unwrap());
-
-// Config, AppState, Room, Msg 等结构体和 impl 保持不变
+// --- 配置结构体 ---
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     ip: String,
     port: u16,
 }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ip: "127.0.0.1".into(),
+            port: 59414,
+        }
+    }
+}
+
+// --- 核心状态与数据结构 ---
 
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
@@ -104,19 +112,53 @@ impl Msg {
         Msg::to_string(self.user, self.data.clone())
     }
     pub fn to_string(user: SocketAddr, data: String) -> String {
-        format!("[{}]: {}\n", user, data)
+        format!("[{}]: {}", user, data)
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            ip: "127.0.0.1".into(),
-            port: 59414,
+// --- 指令解析 ---
+
+type RoomID = u64;
+
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    Create,
+    Join(RoomID),
+    Quit,
+    List,
+}
+
+impl FromStr for Action {
+    type Err = AnyError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let parse_join_str = |s: &str| {
+            let mut parts = s.trim().splitn(2, ' ');
+            parts.next(); // skip ".join"
+            if let Some(num_str) = parts.next() {
+                u64::from_str(num_str.trim()).map_err(AnyError::wrap)
+            } else {
+                Err(AnyError::quick(
+                    "Join command requires a room ID.",
+                    anyverr::ErrKind::ValueValidation,
+                ))
+            }
+        };
+
+        match s.to_lowercase() {
+            s if s == ".create" => Ok(Action::Create),
+            s if s.starts_with(".join") => parse_join_str(&s).map(Action::Join),
+            s if s == ".quit" => Ok(Action::Quit),
+            s if s == ".list" => Ok(Action::List),
+            _ => Err(AnyError::quick(
+                "Not a command. Commands start with '.'",
+                anyverr::ErrKind::ValueValidation,
+            )),
         }
     }
 }
 
+// --- 服务器主逻辑 ---
 pub async fn run(config: Config) -> AnyResult<()> {
     let socket_addr_str = format!("{}:{}", config.ip, config.port);
     let socket_addr = SocketAddr::from_str(&socket_addr_str).map_err(AnyError::wrap)?;
@@ -125,7 +167,7 @@ pub async fn run(config: Config) -> AnyResult<()> {
         .map_err(AnyError::wrap)?;
 
     println!(
-        "tcp listen on {}",
+        "TCP server listening on {}",
         tcp_listener.local_addr().map_err(AnyError::wrap)?
     );
 
@@ -135,7 +177,7 @@ pub async fn run(config: Config) -> AnyResult<()> {
         let (stream, user) = match tcp_listener.accept().await {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("Failed to accept: {}", e);
+                eprintln!("Failed to accept connection: {}", e);
                 continue;
             }
         };
@@ -151,7 +193,6 @@ pub async fn run(config: Config) -> AnyResult<()> {
     }
 }
 
-// ## 重构：handle_connection 现在是“大厅”，负责循环处理指令
 async fn handle_connection(
     stream: TcpStream,
     user: SocketAddr,
@@ -161,8 +202,8 @@ async fn handle_connection(
     let welcome = b"Welcome! You are in the lobby.\nCommands: .create, .join [id], .list, .quit\n";
     s_tx.write_all(welcome).await.map_err(AnyError::wrap)?;
 
-    // 大厅循环 (Lobby Loop)
-    loop {
+    // 外层循环：大厅 (Lobby)
+    'lobby: loop {
         let mut buf = [0u8; 128];
         let len = match s_rx.read(&mut buf).await {
             Ok(0) => return Ok(()), // 客户端断开
@@ -178,13 +219,11 @@ async fn handle_connection(
                 s_tx.write_all(msg.as_bytes())
                     .await
                     .map_err(AnyError::wrap)?;
-                continue; // 继续等待下一个指令
+                continue;
             }
         };
 
-        // 用户执行 .quit 指令，直接退出
         if action == Action::Quit {
-            handle_quit(app_state.clone(), user).await;
             s_tx.write_all(b"Goodbye!\n")
                 .await
                 .map_err(AnyError::wrap)?;
@@ -195,7 +234,7 @@ async fn handle_connection(
             Action::Create => handle_create(app_state.clone(), user).await,
             Action::Join(_) => handle_join(&action, app_state.clone(), user).await,
             Action::List => handle_list(app_state.clone()).await,
-            Action::Quit => unreachable!(), // 上面已经处理过
+            Action::Quit => unreachable!(),
         };
 
         if let Some(msg) = room_state.message {
@@ -204,89 +243,61 @@ async fn handle_connection(
                 .map_err(AnyError::wrap)?;
         }
 
-        // 如果指令是 .create 或 .join 且成功，则 room_state 会包含必要信息
-        // 此时跳出大厅循环，进入聊天会话
-        if let (Some(id), Some(rx), Some(tx)) =
+        // 如果成功加入房间，则进入内层聊天循环
+        if let (Some(room_id), Some(mut receiver), Some(_sender)) =
             (room_state.room_id, room_state.receiver, room_state.sender)
         {
-            return run_chat_session(s_rx, s_tx, user, app_state, id, rx, tx).await;
+            // 内层循环：聊天室
+            loop {
+                let mut read_buf = [0u8; 2048];
+                tokio::select! {
+                    // 监听来自房间其他用户的消息
+                    Some(msg) = receiver.recv() => {
+                        if msg.user != user {
+                            // 不显示自己发的消息
+                            if s_tx.write_all(msg.msg().as_bytes()).await.is_err() {
+                                break; // 写入失败，结束会话
+                            }
+                        }
+                    }
+
+                    // 监听当前用户的键盘输入
+                    result = s_rx.read(&mut read_buf) => {
+                        let len = match result {
+                            Ok(0) | Err(_) => break, // 客户端断开
+                            Ok(n) => n,
+                        };
+
+                        let data = String::from_utf8_lossy(&read_buf[..len]).into_owned();
+
+                        if let Ok(action) = Action::from_str(&data) {
+                            if action == Action::Quit{
+                                handle_quit(app_state.clone(), user, room_id).await;
+                                s_tx.write_all(b"You have left the room. Returning to lobby.\n").await.map_err(AnyError::wrap)?;
+                                continue 'lobby; // 返回到大厅循环
+                            }
+                        }
+
+                        // 作为聊天消息广播
+                        let msg = Msg { user, data };
+                        let senders = {
+                             let state = app_state.lock().await;
+                             state.rooms.get(&room_id).map_or(HashMap::new(), |r| r.senders.clone())
+                        };
+                        for s in senders.values() {
+                            let _ = s.send(msg.clone());
+                        }
+                    }
+                }
+            } // 内层循环结束
+
+            // 当从聊天循环 break (如客户端断开) 时，确保清理资源
+            handle_quit(app_state.clone(), user, room_id).await;
         }
-        // 对于 .list 等指令，则继续在大厅循环中等待下一个指令
     }
 }
 
-// 将聊天会话逻辑独立成一个函数
-async fn run_chat_session(
-    mut s_rx: ReadHalf<TcpStream>,
-    mut s_tx: WriteHalf<TcpStream>,
-    user: SocketAddr,
-    app_state: Arc<Mutex<AppState>>,
-    room_id: u64,
-    mut room_receiver: UnboundedReceiver<Msg>,
-    room_sender: Arc<UnboundedSender<Msg>>,
-) -> AnyResult<()> {
-    // 写任务
-    let write_task = tokio::spawn(async move {
-        while let Some(msg) = room_receiver.recv().await {
-            if msg.user != user {
-                // 忽略来自自己的消息
-                if s_tx.write_all(msg.msg().as_bytes()).await.is_err() {
-                    break;
-                }
-            }
-        }
-    });
-
-    // 读任务
-    let read_task = tokio::spawn(async move {
-        let mut buf = [0u8; 2048];
-        loop {
-            let len = match s_rx.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) => {
-                    let _ = room_sender.send(Msg {
-                        user: *SYSTEM_ADMIN,
-                        data: format!("[ERROR]: {e}"),
-                    });
-                    break;
-                }
-            };
-
-            let data = String::from_utf8_lossy(&buf[..len]).into_owned();
-            let msg = Msg { user, data };
-
-            let senders = {
-                let state = app_state.lock().await;
-                state
-                    .rooms
-                    .get(&room_id)
-                    .map_or(HashMap::new(), |r| r.senders.clone())
-            };
-
-            for sender in senders.values() {
-                let _ = sender.send(msg.clone());
-            }
-        }
-
-        // 连接结束时，清理用户资源
-        let mut state = app_state.lock().await;
-        if let Some(room) = state.rooms.get_mut(&room_id) {
-            println!("{} disconnected from room {}", user, room_id);
-            room.remove_user(&user);
-            let leave_msg = Msg {
-                user,
-                data: "has left the room.".to_string(),
-            };
-            for sender in room.senders.values() {
-                let _ = sender.send(leave_msg.clone());
-            }
-        }
-    });
-
-    let _ = tokio::join!(write_task, read_task);
-    Ok(())
-}
+// --- Action Handlers ---
 
 #[derive(Debug)]
 struct RoomState {
@@ -298,6 +309,7 @@ struct RoomState {
 
 impl RoomState {
     pub fn empty() -> Self {
+        /* ... */
         Self {
             room_id: None,
             receiver: None,
@@ -306,6 +318,7 @@ impl RoomState {
         }
     }
     pub fn new(room_id: Option<u64>) -> Self {
+        /* ... */
         Self {
             room_id,
             receiver: None,
@@ -327,7 +340,6 @@ impl RoomState {
     }
 }
 
-// handle_* 系列函数基本保持不变，只是做了微调
 async fn handle_list(app_state: Arc<Mutex<AppState>>) -> RoomState {
     let state = app_state.lock().await;
     let rooms_id = state
@@ -352,21 +364,21 @@ async fn handle_join(
     user: SocketAddr,
 ) -> RoomState {
     if let Action::Join(room_id) = action {
-        let mut app_state = app_state.lock().await;
+        let mut state = app_state.lock().await;
 
-        if app_state.user_exists(user).is_some() {
+        if state.user_exists(user).is_some() {
             return RoomState::empty().with_message(Some(
                 "You are already in a room. Use .quit to leave first.\n".to_string(),
             ));
         }
 
-        if let Some(room) = app_state.rooms.get_mut(room_id) {
+        if let Some(room) = state.rooms.get_mut(room_id) {
             let (tx, rx) = mpsc::unbounded_channel::<Msg>();
             let arc_tx = Arc::new(tx);
 
             let join_msg = Msg {
                 user,
-                data: "has joined the room.".to_string(),
+                data: "has joined the room.\n".to_string(),
             };
             for sender in room.senders.values() {
                 let _ = sender.send(join_msg.clone());
@@ -390,8 +402,8 @@ async fn handle_join(
     RoomState::empty()
 }
 
-async fn handle_create(app_state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
-    let mut state = app_state.lock().await;
+async fn handle_create(state: Arc<Mutex<AppState>>, user: SocketAddr) -> RoomState {
+    let mut state = state.lock().await;
 
     if state.user_exists(user).is_some() {
         return RoomState::empty().with_message(Some(
@@ -417,50 +429,19 @@ async fn handle_create(app_state: Arc<Mutex<AppState>>, user: SocketAddr) -> Roo
         .with_message(Some(msg))
 }
 
-async fn handle_quit(app_state: Arc<Mutex<AppState>>, user: SocketAddr) {
-    let mut state = app_state.lock().await;
-    if let Some(room_id) = state.user_exists(user) {
-        if let Some(room) = state.rooms.get_mut(&room_id) {
-            room.remove_user(&user);
+async fn handle_quit(state: Arc<Mutex<AppState>>, user: SocketAddr, room_id: u64) {
+    let mut state = state.lock().await;
+    if let Some(room) = state.rooms.get_mut(&room_id) {
+        if room.user_exists(user) {
             println!("User {} quit from room {}", user, room_id);
-        }
-    }
-}
-
-// Action enum 和 FromStr impl 保持不变
-type RoomID = u64;
-#[derive(Debug, PartialEq)]
-pub enum Action {
-    Create,
-    Join(RoomID),
-    Quit,
-    List,
-}
-impl FromStr for Action {
-    type Err = AnyError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parse_join_str = |s: &str| {
-            let mut parts = s.trim().splitn(2, ' ');
-            parts.next(); // skip ".join"
-            if let Some(num_str) = parts.next() {
-                u64::from_str(num_str.trim()).map_err(AnyError::wrap)
-            } else {
-                Err(AnyError::quick(
-                    "Join command requires a room ID.",
-                    anyverr::ErrKind::ValueValidation,
-                ))
+            room.remove_user(&user);
+            let leave_msg = Msg {
+                user,
+                data: "has left the room.\n".to_string(),
+            };
+            for sender in room.senders.values() {
+                let _ = sender.send(leave_msg.clone());
             }
-        };
-
-        match s.to_lowercase().trim() {
-            s if s == ".create" => Ok(Action::Create),
-            s if s.starts_with(".join") => parse_join_str(s).map(Action::Join),
-            s if s == ".quit" => Ok(Action::Quit),
-            s if s == ".list" => Ok(Action::List),
-            _ => Err(AnyError::quick(
-                "No such action, available actions:\n.create\n.join [room_id]\n.quit\n.list",
-                anyverr::ErrKind::ValueValidation,
-            )),
         }
     }
 }
