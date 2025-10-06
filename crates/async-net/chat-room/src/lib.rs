@@ -95,6 +95,4 @@ pub async fn run(config: Config) -> AnyResult<()> {
             }
         });
     }
-
-    Ok(())
 }

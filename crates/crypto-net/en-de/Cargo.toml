@@ -1,0 +1,10 @@
+[package]
+name = "en-de"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "en-de"
+path = "src/main.rs"
+
+[dependencies]
