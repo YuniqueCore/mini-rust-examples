@@ -226,6 +226,7 @@ dependencies = [
 name = "en-de"
 version = "0.1.0"
 dependencies = [
+ "anyverr",
  "chacha20poly1305",
 ]
 
