@@ -1,7 +1,4 @@
-use chacha20poly1305::{
-    AeadCore, ChaCha20Poly1305, KeyInit,
-    aead::{OsRng, rand_core::RngCore},
-};
+use chacha20poly1305::{AeadCore, ChaCha20Poly1305, KeyInit, aead::OsRng};
 
 type Span = u16;
 
@@ -13,7 +10,7 @@ pub enum Cipher {
 
 impl Cipher {
     pub fn encrypt(&self, data: &[u8], key: &[u8], nonce: Option<&[u8]>) {
-        let CryptoSuite { key, nonce } = CryptoSuite::generate_key_nonce();
+        let CryptoSuite { key, nonce } = CryptoSuite::new();
         let key = &key.as_slice();
         if let Some(n) = nonce {
             let nonce = Some(n.as_slice());
