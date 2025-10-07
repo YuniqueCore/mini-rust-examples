@@ -1,5 +1,8 @@
 use anyverr::{AnyError, AnyResult};
-use chacha20poly1305::{AeadCore, ChaCha20Poly1305, KeyInit, aead::OsRng};
+use chacha20poly1305::{
+    AeadCore, ChaCha20Poly1305, Key, KeyInit, XChaCha20Poly1305, XNonce,
+    aead::{Aead, OsRng, rand_core::RngCore},
+};
 
 type Result<T> = AnyResult<T>;
 type Span = u16;
@@ -20,7 +23,11 @@ impl Cipher {
     }
 
     pub fn decrypt(&self, data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
-        Ok(vec![])
+        match self {
+            Cipher::Xor(span) => Self::decrypt_xor(data, span, key, nonce),
+            Cipher::ChaCha20Poly1305 => Self::decrypt_chacha20(data, key, nonce),
+            Cipher::Rc6 => todo!(),
+        }
     }
 
     /// 对数据进行 XOR 加密，并可以指定跳过的字节间隔。
@@ -77,10 +84,94 @@ impl Cipher {
     }
 
     fn encrypt_chacha20(data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
-        Ok(vec![])
+        if key.len() < 32 {
+            return Err(AnyError::quick(
+                "The key len should be greater than or equals 32",
+                anyverr::ErrKind::RuleViolation,
+            ));
+        }
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+        match nonce {
+            Some(n) => {
+                if n.len() != 24 {
+                    return Err(AnyError::quick(
+                        "Provided nonce must be 24 bytes for XChaCha20",
+                        anyverr::ErrKind::RuleViolation,
+                    ));
+                }
+                let nonce = XNonce::from_slice(n);
+                let ct = cipher.encrypt(nonce, data).map_err(|e| {
+                    AnyError::quick(format!("{}", e), anyverr::ErrKind::ValueValidation)
+                })?;
+                Ok(ct)
+            }
+            None => {
+                // generate random nonce and prefix to result
+                let mut nonce_bytes = [0u8; 24];
+                OsRng.fill_bytes(&mut nonce_bytes);
+                let nonce = XNonce::from_slice(&nonce_bytes);
+                let ct = cipher.encrypt(nonce, data).map_err(|e| {
+                    AnyError::quick(format!("{}", e), anyverr::ErrKind::ValueValidation)
+                })?;
+                // prefix nonce
+                let mut out = Vec::with_capacity(24 + ct.len());
+                out.extend_from_slice(&nonce_bytes);
+                out.extend_from_slice(&ct);
+                Ok(out)
+            }
+        }
     }
     fn encrypt_rc6(data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
         Ok(vec![])
+    }
+
+    fn decrypt_xor(
+        data: &[u8],
+        span: &Option<Span>,
+        key: &[u8],
+        _nonce: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
+        Cipher::encrypt_xor(data, span, key, _nonce)
+    }
+
+    fn decrypt_chacha20(data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
+        if key.len() < 32 {
+            return Err(AnyError::quick(
+                "The key len should be greater than or equals 32",
+                anyverr::ErrKind::RuleViolation,
+            ));
+        }
+
+        let (nonce, ciphertext) = if let Some(n) = nonce {
+            if n.len() != 24 {
+                return Err(AnyError::quick(
+                    "Provided nonce must be 24 bytes for XChaCha20",
+                    anyverr::ErrKind::RuleViolation,
+                ));
+            }
+
+            (n, data)
+        } else {
+            if data.len() < 24 {
+                return Err(AnyError::quick(
+                    "Provided encrypted data with NONE nonce must be more than 24 bytes for XChaCha20",
+                    anyverr::ErrKind::RuleViolation,
+                ));
+            }
+
+            (&data[..24], &data[24..])
+        };
+
+        let key = Key::from_slice(key);
+        let cipher = XChaCha20Poly1305::new(key);
+        let xnonce = XNonce::from_slice(nonce);
+        let res = cipher.decrypt(xnonce, ciphertext).map_err(|e| {
+            AnyError::quick(
+                format!("failed to decrypt data: {}", e),
+                anyverr::ErrKind::ValueValidation,
+            )
+        })?;
+        Ok(res)
     }
 }
 
@@ -100,6 +191,30 @@ impl CryptoSuite {
         let nonce = Some(nonce.to_vec());
 
         CryptoSuite { key, nonce }
+    }
+
+    pub fn key_len(mut self, len: usize) -> Self {
+        let mut key = Vec::with_capacity(len);
+        let mut os_rng = OsRng::default();
+        os_rng.fill_bytes(&mut key);
+        self.key = key;
+        println!("key Len:{}", self.key.len());
+        self
+    }
+
+    pub fn nonce_len(mut self, len: usize) -> Self {
+        if len == 0 {
+            self.nonce = None;
+            return self;
+        }
+
+        let mut nonce = Vec::with_capacity(len);
+        let mut os_rng = OsRng::default();
+        os_rng.fill_bytes(&mut nonce);
+        self.nonce = Some(nonce);
+        println!("nonce Len:{}", self.nonce.clone().unwrap().len());
+
+        self
     }
 }
 
@@ -140,6 +255,81 @@ mod test {
         println!("xor2: {:?}", res);
         let msg = String::from_utf8_lossy(&res);
         println!("xor2 msg: {}", msg);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xor_encrypt_decrypt() -> Result<()> {
+        let data = String::from("Hello world");
+        let CryptoSuite { key, nonce } = CryptoSuite::new();
+        let key = &key.as_slice();
+        // let mut os_rng = OsRng::default();
+        // let random_span = os_rng.next_u32() as usize / data.len();
+        let xor_cipher = Cipher::Xor(Some(2));
+        println!("origin: {:?}", data.as_bytes());
+        println!("origin msg: {}", data);
+        let res = if let Some(n) = nonce.clone() {
+            let nonce = Some(n.as_slice());
+            xor_cipher.encrypt(data.as_bytes(), key, nonce)?
+        } else {
+            let nonce = None;
+            xor_cipher.encrypt(data.as_bytes(), key, nonce)?
+        };
+        println!("xor: {:?}", res);
+        let msg = String::from_utf8_lossy(&res);
+        println!("xor msg: {}", msg);
+
+        let res = if let Some(n) = nonce {
+            let nonce = Some(n.as_slice());
+            xor_cipher.decrypt(&res, key, nonce)?
+        } else {
+            let nonce = None;
+            xor_cipher.decrypt(&res, key, nonce)?
+        };
+        println!("decrypto: {:?}", res);
+        let msg = String::from_utf8_lossy(&res);
+        println!("decrypto msg: {}", msg);
+
+        assert_eq!(data, msg);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xchacha20poly1305_en_de() -> Result<()> {
+        let data = String::from("Hello world");
+        let CryptoSuite { key, nonce } = CryptoSuite::new().nonce_len(24).key_len(32);
+        println!(
+            "key len:{}, nonce len:{:?}",
+            key.len(),
+            nonce.clone().map(|n| n.len())
+        );
+        let key = &key.as_slice();
+        let xcahcha20poly1305_cipher = Cipher::ChaCha20Poly1305;
+        println!("origin: {:?}", data.as_bytes());
+        println!("origin msg: {}", data);
+        let res = if let Some(n) = nonce.clone() {
+            let nonce = Some(n.as_slice());
+            xcahcha20poly1305_cipher.encrypt(data.as_bytes(), key, nonce)?
+        } else {
+            let nonce = None;
+            xcahcha20poly1305_cipher.encrypt(data.as_bytes(), key, nonce)?
+        };
+        println!("encrypt: {:?}", res);
+        let msg = String::from_utf8_lossy(&res);
+        println!("encrypt msg: {}", msg);
+
+        let res = if let Some(n) = nonce {
+            let nonce = Some(n.as_slice());
+            xcahcha20poly1305_cipher.decrypt(&res, key, nonce)?
+        } else {
+            let nonce = None;
+            xcahcha20poly1305_cipher.decrypt(&res, key, nonce)?
+        };
+        println!("decrypt: {:?}", res);
+        let msg = String::from_utf8_lossy(&res);
+        println!("decrypt msg: {}", msg);
 
         Ok(())
     }
