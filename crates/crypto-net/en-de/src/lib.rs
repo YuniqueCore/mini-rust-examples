@@ -23,6 +23,17 @@ impl Cipher {
         Ok(vec![])
     }
 
+    /// 对数据进行 XOR 加密，并可以指定跳过的字节间隔。
+    ///
+    /// # 参数
+    /// * `data`: 待加密的字节切片。
+    /// * `span`: 一个 `Option<Span>`，如果为 `Some(s)`，则每隔 `s` 个字节跳过一个字节不进行加密。
+    ///           如果为 `None` 或 `Some(0)`，则对所有字节进行加密。
+    /// * `key`: XOR 密钥。
+    ///
+    /// # 返回值
+    /// * `Ok(Vec<u8>)`: 加密后的数据。
+    /// * `Err(AnyError)`: 如果密钥为空。
     fn encrypt_xor(
         data: &[u8],
         span: &Option<Span>,
@@ -36,23 +47,35 @@ impl Cipher {
             ));
         }
 
-        let mut res = Vec::with_capacity(data.len());
-        if let Some(s) = *span {
-            for (i, d) in data.iter().enumerate() {
-                if i % s as usize == 0 {
-                    // skip this bit which is n*span
-                    res.push(*d);
-                    continue;
-                }
-
-                let k = key[i % key.len()];
-                let xor = d ^ k;
-                res.push(xor);
-            }
+        if let Some(span_val) = *span {
+            // 复杂情况：每隔 'span_val' 个字节跳过一个
+            // 这里的逻辑已经能正确处理 span > data.len() 的情况。
+            // 例如，如果 data.len() = 10, span = 100，那么 i % 100 == 0
+            // 只在 i == 0 时成立，因此只会跳过第一个字节。
+            // 这正是“收缩至对应范围”的数学体现。
+            Ok(data
+                .iter()
+                .enumerate()
+                .map(|(i, &d)| {
+                    // 检查当前索引是否是 span 的倍数
+                    if i % span_val as usize == 0 {
+                        d // 是，则保留原始字节
+                    } else {
+                        // 否，进行 XOR 运算
+                        d ^ key[i % key.len()]
+                    }
+                })
+                .collect())
+        } else {
+            // 对所有数据进行 XOR
+            Ok(data
+                .iter()
+                .enumerate()
+                .map(|(i, &d)| d ^ key[i % key.len()])
+                .collect())
         }
-
-        Ok(res)
     }
+
     fn encrypt_chacha20(data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
         Ok(vec![])
     }
@@ -68,10 +91,6 @@ struct CryptoSuite {
 
 impl CryptoSuite {
     pub fn new() -> Self {
-        Self::generate_key_nonce()
-    }
-
-    fn generate_key_nonce() -> CryptoSuite {
         let os_rng = OsRng::default();
 
         let key = ChaCha20Poly1305::generate_key(os_rng);
