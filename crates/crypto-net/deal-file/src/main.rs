@@ -1,5 +1,5 @@
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::PathBuf,
     str::FromStr,
@@ -100,7 +100,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
 fn main() -> AnyResult<()> {
     let args = parse_args().map_err(AnyError::wrap)?;
     println!("args: {:?}", args);
-    let mut input_file = if args.input.is_file() {
+    let input_file = if args.input.is_file() {
         Ok(OpenOptions::new()
             .read(true)
             .open(&args.input)
@@ -111,7 +111,7 @@ fn main() -> AnyResult<()> {
             anyverr::ErrKind::EntityAbsence,
         ))
     }?;
-    let mut output_file = if !args.output.exists() {
+    let output_file = if !args.output.exists() {
         Ok(OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -125,8 +125,31 @@ fn main() -> AnyResult<()> {
     }?;
 
     let timer = SystemTime::now();
+
+    if let Err(e) = handle(&args, input_file, output_file) {
+        std::fs::remove_file(&args.output).map_err(AnyError::wrap)?;
+        return Err(e);
+    };
+
+    let elapsed = timer.elapsed().map_err(AnyError::wrap)?;
+    println!(
+        "[{}ms] Successfully {} file: {} and save the content to file: {}",
+        elapsed.as_millis(),
+        args.action,
+        args.input.display(),
+        args.output.display()
+    );
+
+    Ok(())
+}
+
+fn handle(
+    args: &Args,
+    mut input_file: std::fs::File,
+    mut output_file: std::fs::File,
+) -> AnyResult<()> {
     let mut buf = [0u8; 1024];
-    loop {
+    Ok(loop {
         match input_file.read(&mut buf) {
             Ok(0) => {
                 // EOF
@@ -145,18 +168,7 @@ fn main() -> AnyResult<()> {
                 return Err(AnyError::wrap(e));
             }
         }
-    }
-
-    let elapsed = timer.elapsed().map_err(AnyError::wrap)?;
-    println!(
-        "[{}ms] Successfully {} file: {} and save the content to file: {}",
-        elapsed.as_millis(),
-        args.action,
-        args.input.display(),
-        args.output.display()
-    );
-
-    Ok(())
+    })
 }
 
 const KEY_STR: &str = "THE DEAL_FILE DEFAULT KEY FOR TESTING";
