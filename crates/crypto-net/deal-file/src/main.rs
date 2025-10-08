@@ -119,7 +119,7 @@ fn main() -> AnyResult<()> {
 
     let timer = SystemTime::now();
 
-    if let Err(e) = handle(&args, input_file, output_file) {
+    if let Err(e) = handle_full_block(&args, input_file, output_file) {
         std::fs::remove_file(&args.output).map_err(AnyError::wrap)?;
         return Err(e);
     };
@@ -137,7 +137,7 @@ fn main() -> AnyResult<()> {
     Ok(())
 }
 
-fn handle(
+fn handle_full_block(
     args: &Args,
     mut input_file: std::fs::File,
     mut output_file: std::fs::File,
@@ -152,28 +152,36 @@ fn handle(
     output_file
         .write_all(&handled_content)
         .map_err(AnyError::wrap)
+}
 
-    // let mut buf = [0u8;1024];
-    // Ok(loop {
-    // match input_file.read(&mut buf) {
-    //     Ok(0) => {
-    //         // EOF
-    //         break;
-    //     }
-    //     Ok(n) => {
-    //         let handled_content = match &args.action {
-    //             CipherAction::Encrypt => encrypt(&buf[..n], &args.cipher),
-    //             CipherAction::Decrypt => decrypt(&buf[..n], &args.cipher),
-    //         }?;
-    //         output_file
-    //             .write_all(&handled_content)
-    //             .map_err(AnyError::wrap)?;
-    //     }
-    //     Err(e) => {
-    //         return Err(AnyError::wrap(e));
-    //     }
-    // }
-    // })
+/// TODO: need to refactor en-de crate to support stream-crypto
+fn handle_stream(
+    args: &Args,
+    mut input_file: std::fs::File,
+    mut output_file: std::fs::File,
+) -> AnyResult<()> {
+    let mut buf = [0u8; 1024];
+    loop {
+        match input_file.read(&mut buf) {
+            Ok(0) => {
+                // EOF
+                break;
+            }
+            Ok(n) => {
+                let handled_content = match &args.action {
+                    CipherAction::Encrypt => encrypt(&buf[..n], &args.cipher),
+                    CipherAction::Decrypt => decrypt(&buf[..n], &args.cipher),
+                }?;
+                output_file
+                    .write_all(&handled_content)
+                    .map_err(AnyError::wrap)?;
+            }
+            Err(e) => {
+                return Err(AnyError::wrap(e));
+            }
+        }
+    }
+    Ok(())
 }
 
 const KEY_STR: &str = "THE DEAL_FILE DEFAULT KEY FOR TESTING";
