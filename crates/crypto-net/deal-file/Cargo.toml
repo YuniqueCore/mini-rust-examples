@@ -1,0 +1,13 @@
+[package]
+name = "deal-file"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "deal-file"
+path = "src/main.rs"
+
+[dependencies]
+en-de = { path = "../en-de" }
+anyverr = { workspace = true }
+lexopt = "0.3.1"

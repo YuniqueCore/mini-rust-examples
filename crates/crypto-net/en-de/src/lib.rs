@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use anyverr::{AnyError, AnyResult};
 use chacha20poly1305::{
     AeadCore, ChaCha20Poly1305, Key, KeyInit, XChaCha20Poly1305, XNonce,
@@ -11,6 +13,31 @@ pub enum Cipher {
     Xor(Option<Span>),
     XChaCha20Poly1305,
     Rc6,
+}
+
+impl FromStr for Cipher {
+    type Err = std::io::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            s if s.starts_with("xor") => {
+                let mut parts = s.splitn(2, '(');
+                parts.next(); //skip xor
+                let num_opt = parts.next();
+                if num_opt.is_none() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Xor pattern not valid: xor(num)...",
+                    ));
+                }
+                let num = num_opt.unwrap().trim_end_matches(')').trim();
+                let number = Span::from_str(num).ok();
+                Ok(Self::Xor(number))
+            }
+            "rc6" => Ok(Self::Rc6),
+            "xchacha20poly1305" | _ => Ok(Self::XChaCha20Poly1305),
+        }
+    }
 }
 
 impl Cipher {
