@@ -15,7 +15,7 @@ reqwest = { workspace = true }
 
 
 [workspace]
-members = ["crates/async-net/*", "crates/crypto-net/*"]
+members = ["c/rc6","crates/async-net/*", "crates/crypto-net/*"]
 resolver = "2"
 
 [workspace.dependencies]
