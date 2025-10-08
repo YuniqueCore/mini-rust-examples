@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyverr::{AnyError, AnyResult};
-use en_de::Cipher;
+use en_de::{Cipher, StreamDecryptor, StreamEncryptor};
 
 #[derive(Debug)]
 enum CipherAction {
@@ -119,7 +119,7 @@ fn main() -> AnyResult<()> {
 
     let timer = SystemTime::now();
 
-    if let Err(e) = handle_full_block(&args, input_file, output_file) {
+    if let Err(e) = handle_stream(&args, input_file, output_file) {
         std::fs::remove_file(&args.output).map_err(AnyError::wrap)?;
         return Err(e);
     };
@@ -154,36 +154,6 @@ fn handle_full_block(
         .map_err(AnyError::wrap)
 }
 
-/// TODO: need to refactor en-de crate to support stream-crypto
-fn handle_stream(
-    args: &Args,
-    mut input_file: std::fs::File,
-    mut output_file: std::fs::File,
-) -> AnyResult<()> {
-    let mut buf = [0u8; 1024];
-    loop {
-        match input_file.read(&mut buf) {
-            Ok(0) => {
-                // EOF
-                break;
-            }
-            Ok(n) => {
-                let handled_content = match &args.action {
-                    CipherAction::Encrypt => encrypt(&buf[..n], &args.cipher),
-                    CipherAction::Decrypt => decrypt(&buf[..n], &args.cipher),
-                }?;
-                output_file
-                    .write_all(&handled_content)
-                    .map_err(AnyError::wrap)?;
-            }
-            Err(e) => {
-                return Err(AnyError::wrap(e));
-            }
-        }
-    }
-    Ok(())
-}
-
 const KEY_STR: &str = "THE DEAL_FILE DEFAULT KEY FOR TESTING";
 const NONCE_STR: &str = "THE DEAL_FILE DEFAULT NONCE FOR TESTING";
 
@@ -196,4 +166,147 @@ fn encrypt(input: &[u8], cipher: &Cipher) -> AnyResult<Vec<u8>> {
 
 fn decrypt(input: &[u8], cipher: &Cipher) -> AnyResult<Vec<u8>> {
     cipher.decrypt(input, &KEY, Some(&NONCE))
+}
+
+// #####################
+// stream crypto
+// #####################
+
+/// 流式处理文件，支持大文件的分块加密解密
+fn handle_stream(
+    args: &Args,
+    input_file: std::fs::File,
+    output_file: std::fs::File,
+) -> AnyResult<()> {
+    match &args.cipher {
+        Cipher::XChaCha20Poly1305 => handle_stream_xchacha20(args, input_file, output_file),
+        Cipher::Xor(span) => handle_stream_xor(args, input_file, output_file, *span),
+        Cipher::Rc6 => Err(AnyError::quick(
+            "RC6 stream encryption not implemented",
+            anyverr::ErrKind::InfrastructureFailure,
+        )),
+    }
+}
+
+/// XChaCha20Poly1305 流式处理
+fn handle_stream_xchacha20(
+    args: &Args,
+    mut input_file: std::fs::File,
+    mut output_file: std::fs::File,
+) -> AnyResult<()> {
+    match &args.action {
+        CipherAction::Encrypt => {
+            // 创建流式加密器
+            let mut encryptor = StreamEncryptor::new(&KEY, &NONCE)?;
+            let mut buf = [0u8; 1024];
+
+            loop {
+                match input_file.read(&mut buf) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let encrypted_chunk = encryptor.encrypt_chunk(&buf[..n])?;
+                        output_file
+                            .write_all(&encrypted_chunk)
+                            .map_err(AnyError::wrap)?;
+                    }
+                    Err(e) => return Err(AnyError::wrap(e)),
+                }
+            }
+
+            // 将 nonce 写入文件开头，以便解密时使用
+            let _final_nonce = encryptor.finalize();
+            // 注意：这里简化处理，实际应用中可能需要更复杂的格式
+        }
+        CipherAction::Decrypt => {
+            // 创建流式解密器
+            let mut decryptor = StreamDecryptor::new(&KEY, &NONCE)?;
+            let mut buf = [0u8; 1040]; // 稍大一些，因为加密后数据会变大
+
+            loop {
+                match input_file.read(&mut buf) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let decrypted_chunk = decryptor.decrypt_chunk(&buf[..n])?;
+                        output_file
+                            .write_all(&decrypted_chunk)
+                            .map_err(AnyError::wrap)?;
+                    }
+                    Err(e) => return Err(AnyError::wrap(e)),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// XOR 流式处理
+fn handle_stream_xor(
+    args: &Args,
+    mut input_file: std::fs::File,
+    mut output_file: std::fs::File,
+    span: Option<u16>,
+) -> AnyResult<()> {
+    let mut buf = [0u8; 1024];
+    let mut byte_counter = 0u64;
+
+    loop {
+        match input_file.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                let chunk = &buf[..n];
+                let handled_content = match &args.action {
+                    CipherAction::Encrypt => {
+                        // XOR 流式加密，保持跨块的状态
+                        let mut result = Vec::with_capacity(chunk.len());
+                        for &byte in chunk {
+                            let should_skip = if let Some(span_val) = span {
+                                byte_counter % span_val as u64 == 0
+                            } else {
+                                false
+                            };
+
+                            let processed_byte = if should_skip {
+                                byte
+                            } else {
+                                byte ^ KEY[byte_counter as usize % KEY.len()]
+                            };
+
+                            result.push(processed_byte);
+                            byte_counter += 1;
+                        }
+                        result
+                    }
+                    CipherAction::Decrypt => {
+                        // XOR 解密与加密相同
+                        let mut result = Vec::with_capacity(chunk.len());
+                        for &byte in chunk {
+                            let should_skip = if let Some(span_val) = span {
+                                byte_counter % span_val as u64 == 0
+                            } else {
+                                false
+                            };
+
+                            let processed_byte = if should_skip {
+                                byte
+                            } else {
+                                byte ^ KEY[byte_counter as usize % KEY.len()]
+                            };
+
+                            result.push(processed_byte);
+                            byte_counter += 1;
+                        }
+                        result
+                    }
+                };
+
+                output_file
+                    .write_all(&handled_content)
+                    .map_err(AnyError::wrap)?;
+            }
+            Err(e) => return Err(AnyError::wrap(e)),
+        }
+    }
+
+    Ok(())
 }

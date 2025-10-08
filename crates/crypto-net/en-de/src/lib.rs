@@ -6,6 +6,10 @@ use chacha20poly1305::{
     aead::{Aead, OsRng, rand_core::RngCore},
 };
 
+mod stream;
+
+pub use stream::*;
+
 type Result<T> = AnyResult<T>;
 type Span = u16;
 
@@ -149,7 +153,7 @@ impl Cipher {
             }
         }
     }
-    fn encrypt_rc6(data: &[u8], key: &[u8], nonce: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn encrypt_rc6(_data: &[u8], _key: &[u8], _nonce: Option<&[u8]>) -> Result<Vec<u8>> {
         Ok(vec![])
     }
 
@@ -202,7 +206,6 @@ impl Cipher {
         Ok(res)
     }
 }
-
 struct CryptoSuite {
     key: Vec<u8>,
     nonce: Option<Vec<u8>>,
