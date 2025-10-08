@@ -9,6 +9,7 @@ use chacha20poly1305::{
 type Result<T> = AnyResult<T>;
 type Span = u16;
 
+#[derive(Debug)]
 pub enum Cipher {
     Xor(Option<Span>),
     XChaCha20Poly1305,
