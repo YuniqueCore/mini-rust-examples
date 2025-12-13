@@ -23,10 +23,13 @@
 use std::{
     env::args,
     fmt::Debug,
+    io::Write,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    thread::{self, spawn},
 };
 
 use sarge::prelude::*;
+// use smol::prelude::*;
 
 sarge! {
     Args,
@@ -34,8 +37,10 @@ sarge! {
     // socket addr
     //
     // deafult :127.0.0.1:9912
-    's' socket_addr: String,
-    't' target_addr: String,
+    > "help"
+    #ok 's' socket_addr: String ,
+    #ok 't' target_addr: String,
+    #err 'h' help:bool =true,
 }
 
 impl Debug for Args {
@@ -43,6 +48,7 @@ impl Debug for Args {
         f.debug_struct("Args")
             .field("socket_addr", &self.socket_addr)
             .field("target_addr", &self.target_addr)
+            .field("help", &self.help)
             .finish()
     }
 }
@@ -50,10 +56,32 @@ impl Debug for Args {
 fn main() -> anyhow::Result<()> {
     use std::net::TcpStream;
     use std::str::FromStr;
-    let (args, remainder) = Args::parse()?;
-    println!("{args:#?}, {remainder:?}");
-    let bind_socket = SocketAddr::from_str(&args.socket_addr)?;
-    let target_socket = SocketAddr::from_str(&args.target_addr)?;
+    let (args, mut remainder) = Args::parse()?;
+    if args.help.ok().is_some_and(|b| b) {
+        Args::print_help();
+        return Ok(());
+    }
 
+    remainder.remove(0); // remove the executable path
+
+    println!("{args:#?}\n{remainder:?}");
+    // let bind_socket = SocketAddr::from_str(&args.socket_addr)?;
+    let target_socket = SocketAddr::from_str(&args.target_addr.unwrap())?;
+
+    let mut tcp_stream = TcpStream::connect(target_socket)?;
+
+    let mut content = remainder.join("\n");
+
+    println!("{content}");
+
+    let send_task = thread::spawn(move || {
+        let res = tcp_stream.write_all(unsafe { content.as_bytes_mut() });
+        let _ = dbg!(res);
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+
+    send_task
+        .join()
+        .expect("should be successfully write the data");
     Ok(())
 }

@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-sarge = "8.0.0"
+mea = "0.5.2"
+sarge = { version = "8", features = ["help"] }
+smol = "2.0.2"
