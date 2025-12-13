@@ -45,7 +45,7 @@ impl StreamEncryptor {
         // 为每个块生成唯一的 nonce：基础 nonce + 计数器
         let mut chunk_nonce = self.nonce;
         let counter_bytes = self.counter.to_le_bytes();
-        // 将计数器添加到 nonce 的最后 8 字节
+        // 将 8 字节的计数器与 nonce 的前 8 字节进行 XOR 操作。
         for (i, &byte) in counter_bytes.iter().enumerate() {
             if i < 24 {
                 chunk_nonce[i] ^= byte;
