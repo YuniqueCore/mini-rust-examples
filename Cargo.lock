@@ -19,6 +19,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25192ec22df6f39fae84483700a4dede76d9768aa51d328e98bda7e41881c6a6"
 
 [[package]]
+name = "anyhow"
+version = "1.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
 name = "anyverr"
 version = "0.1.0"
 dependencies = [
@@ -769,6 +775,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nettasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sarge",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1055,6 +1069,12 @@ name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
+name = "sarge"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de3d519151588094d767ecc291d43a28de5089299100f2947180750886360f1e"
 
 [[package]]
 name = "schannel"
