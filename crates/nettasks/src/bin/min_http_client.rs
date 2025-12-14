@@ -135,7 +135,7 @@ macro_rules! define_it {
 define_it!(
     /// nice to meet you
     #[derive(Debug)]
-    enum ReqMethod {
+    pub enum ReqMethod {
         PUT,
         GET,
         POST,
@@ -151,17 +151,33 @@ macro_rules! impl_req_method {
     ($method:ident) => {
         impl ReqBuilder {
             paste! {
-                pub fn [< $method:lower >](mut self, method: ReqMethod, route: &str) -> Self {
+                pub fn [< $method:lower >](self, route: &str) -> Self {
                     use ReqMethod::*;
                     self.req_method($method, route)
                 }
             }
         }
     };
+    ($ty:ident :: $variant:ident) => {
+        impl ReqBuilder {
+            paste! {
+                pub fn [< $variant:lower >](self, route: &str) -> Self {
+                    self.req_method($ty::$variant, route)
+                }
+            }
+        }
+    };
+    ($method:path => $fn_name:ident) => {
+        impl ReqBuilder {
+            pub fn $fn_name(self, route: &str) -> Self {
+                self.req_method($method, route)
+            }
+        }
+    };
 }
 
-impl_req_method!(ReqMethod::GET);
-impl_req_method!(POST);
+impl_req_method!(crate::ReqMethod::GET => get);
+impl_req_method!(ReqMethod::POST);
 impl_req_method!(DELETE);
 impl_req_method!(PUT);
 
