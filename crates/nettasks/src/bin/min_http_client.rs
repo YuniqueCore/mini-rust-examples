@@ -20,32 +20,28 @@
 /// 建议反馈方式
 /// 终端日志：清晰展示“连接 → 发送请求 → 接收 + 解析响应”的过程。
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
-use std::{fmt::Debug, io::Write, net::SocketAddr, thread};
+use std::{
+    fmt::Debug,
+    io::{BufReader, BufWriter, Read, Write},
+    net::SocketAddr,
+    thread,
+};
 
 use paste::paste;
 use sarge::prelude::*;
 // use smol::prelude::*;
 
 sarge! {
+    #[derive(Debug)]
     Args,
 
     // socket addr
-    //
-    // deafult :127.0.0.1:9912
     > "help"
-    #ok 's' socket_addr: String ,
-    #ok 't' target_addr: String,
-    #err 'h' help:bool =true,
-}
-
-impl Debug for Args {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Args")
-            .field("socket_addr", &self.socket_addr)
-            .field("target_addr", &self.target_addr)
-            .field("help", &self.help)
-            .finish()
-    }
+    #ok 's' socket_addr: String = "127.0.0.1:9912" ,
+    #ok 't' target_addr: String= "127.0.0.1:8000",
+    #ok 'H' headers:Vec<String>,
+    #ok 'd' data:Vec<String>,
+    #err 'h' help:bool = true,
 }
 
 const HTTP_VERSION: &str = "HTTP/1.1";
@@ -61,19 +57,37 @@ enum ResponseStatusCode {
 macro_rules! define_it {
     // macro! for enum
     (
-        $( #[$attr_meta:meta] )+
+        $( #[$attr_meta:meta] )*
         $v:vis enum $name:ident {
             $(
+                $( #[$ident_attr_meta:meta] )*
                 $idents:ident
             ),* $(,)?
         }
     ) => {
-        $( #[$attr_meta] )+
+        $( #[$attr_meta] )*
         $v enum $name{
             $(
+                $( #[$ident_attr_meta] )*
                 $idents ,
             )*
         }
+
+        impl $name {
+            pub const ITEMS: &'static [Self] = &[
+                $( Self::$idents, )*
+            ];
+            pub const ITEMS_COUNT: usize = Self::ITEMS.len();
+        }
+
+        paste! {
+            macro_rules! [<with_variants_ $name>] {
+                ($m:ident) => {
+                    $m!($name; $( $idents ),*);
+                };
+            }
+        }
+
 
         impl ::core::fmt::Display for $name{
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -85,37 +99,22 @@ macro_rules! define_it {
                     write!(f, "{}", value)
             }
         }
-
-        paste! {
-            impl $name {
-                pub const [<ITEMS_ $name:upper>]: &'static [Self] = &[
-                    $( Self::$idents, )*
-                ];
-                pub const ITEMS_COUNT: usize = Self::[<ITEMS_ $name:upper>].len();
-            }
-        }
-
-        paste! {
-            macro_rules! [<with_variants_ $name>] {
-                ($m:ident) => {
-                    $m!($name; $( $idents ),*);
-                };
-            }
-        }
     };
 
     // macro! for struct
    (
-        $( #[$attr_meta:meta] )+
+        $( #[$attr_meta:meta] )*
         $v:vis struct $name:ident {
            $(
-              $vv:vis  $idents:ident: $idents_ty:ty = $default_val:expr
+                $( #[$ident_attr_meta:meta] )*
+                $vv:vis  $idents:ident: $idents_ty:ty = $default_val:expr
             ),* $(,)?
         }
     ) => {
-        $( #[$attr_meta] )+
+        $( #[$attr_meta] )*
         $v struct $name{
             $(
+                $( #[$ident_attr_meta] )*
                 $idents: $idents_ty,
             )*
         }
@@ -138,6 +137,7 @@ define_it!(
     /// nice to meet you
     #[derive(Debug)]
     pub enum ReqMethod {
+        /// help
         PUT,
         GET,
         POST,
@@ -175,10 +175,11 @@ impl ReqBuilder {
     }
     pub fn req_method(mut self, method: ReqMethod, route: &str) -> Self {
         self.req = Self::__build_request_method(method, route, HTTP_VERSION);
+        self.req.push('\n');
         self
     }
 
-    pub fn append_headers<I, S>(mut self, headers: I) -> Self
+    pub fn headers<I, S>(mut self, headers: I) -> Self
     where
         I: Iterator<Item = S>,
         S: AsRef<str>,
@@ -190,12 +191,14 @@ impl ReqBuilder {
                 self.req.push('\n');
             }
         }
+        self.req.push('\n');
 
         self
     }
 
-    pub fn append_data(mut self, data: &str) -> Self {
+    pub fn data(mut self, data: &str) -> Self {
         self.req.push_str(data);
+        self.req.push('\n');
 
         self
     }
@@ -210,30 +213,70 @@ fn main() -> anyhow::Result<()> {
     use std::str::FromStr;
     let (args, mut remainder) = Args::parse()?;
     if args.help.ok().is_some_and(|b| b) {
-        Args::print_help();
+        let help = Args::help();
+        println!("{help}");
         return Ok(());
     }
 
     remainder.remove(0); // remove the executable path
 
-    println!("{args:#?}\n{remainder:?}");
+    println!("{args:#?}\n{remainder:?}\n\n");
     // let bind_socket = SocketAddr::from_str(&args.socket_addr)?;
     let target_socket = SocketAddr::from_str(&args.target_addr.unwrap())?;
 
-    let mut tcp_stream = TcpStream::connect(target_socket)?;
+    let tcp_stream = TcpStream::connect(target_socket)?;
+    let tcp_tx = tcp_stream.try_clone()?;
+    let buf_tx = BufWriter::new(tcp_tx);
+    let buf_rx = BufReader::new(tcp_stream);
 
-    let mut content = remainder.join("\n");
+    let headers = remainder.iter();
+    let data = r#"{'name': 'hello', 'data': 'world', 'age': 18 }"#;
 
-    println!("{content}");
+    let req_content = ReqBuilder::new()
+        .get("/abc")
+        .headers(headers)
+        .data(data)
+        .build();
+
+    println!("\n\nrequest: \n{req_content}");
 
     let send_task = thread::spawn(move || {
-        let res = tcp_stream.write_all(unsafe { content.as_bytes_mut() });
+        use std::net::Shutdown;
+        let mut buf_tx = buf_tx;
+        let res = buf_tx.write_all(req_content.as_bytes());
+        if res.is_ok() {
+            let _ = buf_tx.flush();
+            let _ = buf_tx.get_ref().shutdown(Shutdown::Write);
+        }
         let _ = dbg!(res);
-        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+
+    let recv_task = thread::spawn(move || {
+        let mut buf_rx = buf_rx;
+        let mut buf = [0_u8; 2048];
+        loop {
+            let res = buf_rx.read(&mut buf);
+            match res {
+                Ok(0) => break,
+                Ok(len) => {
+                    let response = String::from_utf8_lossy(&buf[..len]);
+                    println!("\n\nresponse: \n{response}\n\n");
+                }
+                Err(e) => {
+                    eprintln!("Err: {e}");
+                    continue;
+                }
+            }
+        }
     });
 
     send_task
         .join()
         .expect("should be successfully write the data");
+
+    recv_task
+        .join()
+        .expect("should be successfully read the data");
+
     Ok(())
 }
