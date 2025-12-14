@@ -24,12 +24,38 @@ use std::{
     fmt::Debug,
     io::{BufReader, BufWriter, Read, Write},
     net::SocketAddr,
+    ops::{Deref, DerefMut},
     thread,
 };
 
 use paste::paste;
-use sarge::prelude::*;
+use sarge::{ArgumentType, prelude::*};
 // use smol::prelude::*;
+
+#[derive(Debug)]
+struct HeadersArg(Vec<String>);
+
+impl ArgumentType for HeadersArg {
+    type Error = ArgParseError;
+
+    fn from_value(val: Option<&str>) -> sarge::ArgResult<Self> {
+        Some(Ok(Self(val?.split(';').map(|s| s.to_string()).collect())))
+    }
+}
+
+impl Deref for HeadersArg {
+    type Target = Vec<String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for HeadersArg {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 sarge! {
     #[derive(Debug)]
@@ -39,7 +65,7 @@ sarge! {
     > "help"
     #ok 's' socket_addr: String = "127.0.0.1:9912" ,
     #ok 't' target_addr: String= "127.0.0.1:8000",
-    #ok 'H' headers:Vec<String>,
+    #ok 'H' headers: HeadersArg,
     #ok 'd' data:Vec<String> = vec![r#"{'name': 'hello', 'data': 'world', 'age': 18 }"#.into()],
     #err 'h' help:bool = true,
 }
@@ -233,7 +259,7 @@ fn main() -> anyhow::Result<()> {
         headers.extend(remainder);
         headers
     } else {
-        remainder
+        HeadersArg(remainder)
     };
 
     let data = &(if let Some(d) = args.data { d } else { vec![] }).join("\n");
