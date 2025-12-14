@@ -40,7 +40,7 @@ sarge! {
     #ok 's' socket_addr: String = "127.0.0.1:9912" ,
     #ok 't' target_addr: String= "127.0.0.1:8000",
     #ok 'H' headers:Vec<String>,
-    #ok 'd' data:Vec<String>,
+    #ok 'd' data:Vec<String> = vec![r#"{'name': 'hello', 'data': 'world', 'age': 18 }"#.into()],
     #err 'h' help:bool = true,
 }
 
@@ -229,12 +229,18 @@ fn main() -> anyhow::Result<()> {
     let buf_tx = BufWriter::new(tcp_tx);
     let buf_rx = BufReader::new(tcp_stream);
 
-    let headers = remainder.iter();
-    let data = r#"{'name': 'hello', 'data': 'world', 'age': 18 }"#;
+    let headers = if let Some(mut headers) = args.headers {
+        headers.extend(remainder);
+        headers
+    } else {
+        remainder
+    };
+
+    let data = &(if let Some(d) = args.data { d } else { vec![] }).join("\n");
 
     let req_content = ReqBuilder::new()
         .get("/abc")
-        .headers(headers)
+        .headers(headers.iter())
         .data(data)
         .build();
 
