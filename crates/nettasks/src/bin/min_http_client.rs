@@ -63,8 +63,7 @@ macro_rules! define_it {
     (
         $( #[$attr_meta:meta] )+
         $v:vis enum $name:ident {
-           $last_ident:ident,
-           $(
+            $(
                 $idents:ident
             ),* $(,)?
         }
@@ -74,7 +73,6 @@ macro_rules! define_it {
             $(
                 $idents ,
             )*
-            $last_ident
         }
 
         impl ::core::fmt::Display for $name{
@@ -83,21 +81,25 @@ macro_rules! define_it {
                         $(
                             Self:: $idents =>  stringify!($idents),
                         )*
-                        Self:: $last_ident =>  stringify!($last_ident)
                     };
                     write!(f, "{}", value)
             }
         }
 
-        paste!{
+        paste! {
             impl $name {
-                pub const ITEMS_COUNT: u32 = Self::$last_ident as u32 + 1;
-                pub const [<ITEMS_ $name:upper>]: [Self; Self::ITEMS_COUNT as usize] = [
-                   $(
-                        Self:: $idents ,
-                    )*
-                    Self:: $last_ident,
+                pub const [<ITEMS_ $name:upper>]: &'static [Self] = &[
+                    $( Self::$idents, )*
                 ];
+                pub const ITEMS_COUNT: usize = Self::[<ITEMS_ $name:upper>].len();
+            }
+        }
+
+        paste! {
+            macro_rules! [<with_variants_ $name>] {
+                ($m:ident) => {
+                    $m!($name; $( $idents ),*);
+                };
             }
         }
     };
@@ -147,39 +149,21 @@ pub struct ReqBuilder {
     req: String,
 }
 
-macro_rules! impl_req_method {
-    ($method:ident) => {
+macro_rules! impl_req_builder_methods {
+    ($enum_ident:ident; $($variant:ident),* $(,)?) => {
         impl ReqBuilder {
             paste! {
-                pub fn [< $method:lower >](self, route: &str) -> Self {
-                    use ReqMethod::*;
-                    self.req_method($method, route)
-                }
-            }
-        }
-    };
-    ($ty:ident :: $variant:ident) => {
-        impl ReqBuilder {
-            paste! {
-                pub fn [< $variant:lower >](self, route: &str) -> Self {
-                    self.req_method($ty::$variant, route)
-                }
-            }
-        }
-    };
-    ($method:path => $fn_name:ident) => {
-        impl ReqBuilder {
-            pub fn $fn_name(self, route: &str) -> Self {
-                self.req_method($method, route)
+                $(
+                    pub fn [< $variant:lower >](self, route: &str) -> Self {
+                        self.req_method($enum_ident::$variant, route)
+                    }
+                )*
             }
         }
     };
 }
 
-impl_req_method!(crate::ReqMethod::GET => get);
-impl_req_method!(ReqMethod::POST);
-impl_req_method!(DELETE);
-impl_req_method!(PUT);
+with_variants_ReqMethod!(impl_req_builder_methods);
 
 impl ReqBuilder {
     pub fn new() -> Self {
