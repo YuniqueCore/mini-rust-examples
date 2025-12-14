@@ -982,6 +982,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mea",
+ "paste",
  "sarge",
  "smol",
 ]
@@ -1070,6 +1071,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "percent-encoding"
@@ -1307,9 +1314,8 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "sarge"
-version = "8.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3d519151588094d767ecc291d43a28de5089299100f2947180750886360f1e"
+version = "8.0.1"
+source = "git+https://github.com/Kyllingene/sarge.git#a20fafe7eb0878052a3dfb3fa824348e2bd4efa8"
 
 [[package]]
 name = "schannel"

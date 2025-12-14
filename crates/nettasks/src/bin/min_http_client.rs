@@ -20,14 +20,9 @@
 /// 建议反馈方式
 /// 终端日志：清晰展示“连接 → 发送请求 → 接收 + 解析响应”的过程。
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
-use std::{
-    env::args,
-    fmt::Debug,
-    io::Write,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    thread::{self, spawn},
-};
+use std::{fmt::Debug, io::Write, net::SocketAddr, thread};
 
+use paste::paste;
 use sarge::prelude::*;
 // use smol::prelude::*;
 
@@ -50,6 +45,163 @@ impl Debug for Args {
             .field("target_addr", &self.target_addr)
             .field("help", &self.help)
             .finish()
+    }
+}
+
+const HTTP_VERSION: &str = "HTTP/1.1";
+
+#[derive(Debug)]
+enum ResponseStatusCode {
+    TwoXX(String),
+    ThreeXX(String),
+    FourXX(String),
+    FiveXX(String),
+}
+
+macro_rules! define_it {
+    // macro! for enum
+    (
+        $( #[$attr_meta:meta] )+
+        $v:vis enum $name:ident {
+           $last_ident:ident,
+           $(
+                $idents:ident
+            ),* $(,)?
+        }
+    ) => {
+        $( #[$attr_meta] )+
+        $v enum $name{
+            $(
+                $idents ,
+            )*
+            $last_ident
+        }
+
+        impl ::core::fmt::Display for $name{
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    let value = match self {
+                        $(
+                            Self:: $idents =>  stringify!($idents),
+                        )*
+                        Self:: $last_ident =>  stringify!($last_ident)
+                    };
+                    write!(f, "{}", value)
+            }
+        }
+
+        paste!{
+            impl $name {
+                pub const ITEMS_COUNT: u32 = Self::$last_ident as u32 + 1;
+                pub const [<ITEMS_ $name:upper>]: [Self; Self::ITEMS_COUNT as usize] = [
+                   $(
+                        Self:: $idents ,
+                    )*
+                    Self:: $last_ident,
+                ];
+            }
+        }
+    };
+
+    // macro! for struct
+   (
+        $( #[$attr_meta:meta] )+
+        $v:vis struct $name:ident {
+           $(
+              $vv:vis  $idents:ident: $idents_ty:ty = $default_val:expr
+            ),* $(,)?
+        }
+    ) => {
+        $( #[$attr_meta] )+
+        $v struct $name{
+            $(
+                $idents: $idents_ty,
+            )*
+        }
+        // TODO: impl default for $name
+
+        impl ::core::fmt::Display for $name{
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    let value = match self {
+                        $(
+                            Self:: $idents =>  stringify!($idents),
+                        )*
+                    };
+                    write!(f, "{}", value)
+            }
+        }
+    };
+}
+
+define_it!(
+    /// nice to meet you
+    #[derive(Debug)]
+    enum ReqMethod {
+        PUT,
+        GET,
+        POST,
+        DELETE,
+    }
+);
+
+pub struct ReqBuilder {
+    req: String,
+}
+
+macro_rules! impl_req_method {
+    ($method:ident) => {
+        impl ReqBuilder {
+            paste! {
+                pub fn [< $method:lower >](mut self, method: ReqMethod, route: &str) -> Self {
+                    use ReqMethod::*;
+                    self.req_method($method, route)
+                }
+            }
+        }
+    };
+}
+
+impl_req_method!(ReqMethod::GET);
+impl_req_method!(POST);
+impl_req_method!(DELETE);
+impl_req_method!(PUT);
+
+impl ReqBuilder {
+    pub fn new() -> Self {
+        Self { req: String::new() }
+    }
+    /// Inner: Build the req method line like: GET /path HTTP/1.1
+    fn __build_request_method(method: ReqMethod, route: &str, http_version: &str) -> String {
+        format!("{} {} {}", method, route, http_version)
+    }
+    pub fn req_method(mut self, method: ReqMethod, route: &str) -> Self {
+        self.req = Self::__build_request_method(method, route, HTTP_VERSION);
+        self
+    }
+
+    pub fn append_headers<I, S>(mut self, headers: I) -> Self
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for h in headers {
+            let h = h.as_ref();
+            if !h.is_empty() {
+                self.req.push_str(h);
+                self.req.push('\n');
+            }
+        }
+
+        self
+    }
+
+    pub fn append_data(mut self, data: &str) -> Self {
+        self.req.push_str(data);
+
+        self
+    }
+
+    pub fn build(self) -> String {
+        self.req
     }
 }
 

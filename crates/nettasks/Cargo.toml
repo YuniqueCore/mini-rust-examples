@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.100"
-mea = "0.5.2"
-sarge = { version = "8", features = ["help"] }
-smol = "2.0.2"
+anyhow = "1"
+mea = "0.5"
+paste = "1.0.15"
+# sarge = { version = "8" }
+sarge = { git = "https://github.com/Kyllingene/sarge.git" }
+smol = "2"
