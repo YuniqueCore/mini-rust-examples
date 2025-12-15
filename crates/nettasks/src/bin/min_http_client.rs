@@ -69,7 +69,7 @@ sarge! {
     #ok 't' target_addr: String= "127.0.0.1:8000",
     #ok 'H' headers: HeadersArg,
     #ok 'd' data:Vec<String> = vec!["{'name': 'hello', 'data': 'world', 'age': 18 }"],
-    #err 'h' help:bool = true,
+    #err 'h' help:bool = false,
 }
 
 const HTTP_VERSION: &str = "HTTP/1.1";
@@ -143,14 +143,15 @@ impl FromStr for StatusLine {
                 format!("status data not complete: {s}"),
             ));
         }
-        let code = RespStatusCode::parse(triplet[0], triplet[1])?;
+        let code = RespStatusCode::parse(triplet[1], triplet[2])?;
 
         Ok(Self {
             code,
-            http_version: triplet[2].into(),
+            http_version: triplet[0].into(),
         })
     }
 }
+
 #[derive(Debug, Default)]
 struct Resp {
     status: StatusLine,
@@ -174,11 +175,15 @@ impl Resp {
         self.status = StatusLine::from_str(status_line)?;
 
         let mut headers = Vec::new();
-        while let Some(header) = lines.next()
-            && !header.is_empty()
-        {
-            headers.push(header.trim());
+        while let Some(header) = lines.next() {
+            let header = header.trim();
+            if !header.is_empty() {
+                headers.push(header);
+            } else {
+                break;
+            }
         }
+
         self.headers = headers.into_iter().map(Into::into).collect();
 
         let mut data = Vec::new();
@@ -402,13 +407,27 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let recv_task = thread::spawn(move || {
         let mut buf_rx = buf_rx;
         let mut buf = [0_u8; 2048];
+        let mut response_vec: Vec<u8> = Vec::with_capacity(buf.len());
         loop {
             let res = buf_rx.read(&mut buf);
             match res {
-                Ok(0) => break,
+                Ok(0) => {
+                    let full_resp_str = String::from_utf8_lossy(&response_vec);
+                    let resp = Resp::default().resp(&full_resp_str).parse();
+                    match resp {
+                        Ok(r) => {
+                            dbg!(r);
+                        }
+                        Err(e) => {
+                            eprintln!("{e}")
+                        }
+                    }
+                    break;
+                }
                 Ok(len) => {
                     // TODO: should use correct encode/decode method to parse instead of uft8 default
                     let response = String::from_utf8_lossy(&buf[..len]);
+                    response_vec.extend_from_slice(&buf[..len]);
                     println!("\n\nresponse: \n{response}\n\n");
                 }
                 Err(e) => {
