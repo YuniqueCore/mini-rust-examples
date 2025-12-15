@@ -1,3 +1,4 @@
+use core::{error, str};
 /// 任务 1：最小 HTTP 客户端
 /// 目标
 /// 理解 TCP 连接 + HTTP/1.1 请求/响应基本格式。
@@ -22,13 +23,14 @@
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
 use std::{
     fmt::Debug,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     net::SocketAddr,
     ops::{Deref, DerefMut},
+    str::FromStr,
     thread,
 };
 
-use paste::paste;
+use pastey::paste;
 use sarge::{ArgumentType, prelude::*};
 // use smol::prelude::*;
 
@@ -61,23 +63,137 @@ sarge! {
     #[derive(Debug)]
     Args,
 
-    // socket addr
-    > "help"
+    /// Legacy doc identifier was `>`; prefer Rust doc comments (`/// ...`).
+    /// socket addr
     #ok 's' socket_addr: String = "127.0.0.1:9912" ,
     #ok 't' target_addr: String= "127.0.0.1:8000",
     #ok 'H' headers: HeadersArg,
-    #ok 'd' data:Vec<String> = vec![r#"{'name': 'hello', 'data': 'world', 'age': 18 }"#.into()],
+    #ok 'd' data:Vec<String> = vec!["{'name': 'hello', 'data': 'world', 'age': 18 }"],
     #err 'h' help:bool = true,
 }
 
 const HTTP_VERSION: &str = "HTTP/1.1";
 
-#[derive(Debug)]
-enum ResponseStatusCode {
+#[derive(Debug, Clone)]
+enum RespStatusCode {
     TwoXX(String),
     ThreeXX(String),
     FourXX(String),
     FiveXX(String),
+    Unknown(String),
+}
+
+macro_rules! impl_response_status_code {
+    (
+        $enum_parent:ident :: $enum_ident:ident
+    ) => {
+        paste! {
+            impl $enum_parent {
+                #[allow(unused)]
+                pub fn [< $enum_ident:replace("XX", ""):lower >](msg: &str) -> Self {
+                    $enum_parent::$enum_ident(msg.into())
+                }
+            }
+        }
+    };
+}
+
+impl_response_status_code!(RespStatusCode::TwoXX);
+impl_response_status_code!(RespStatusCode::ThreeXX);
+impl_response_status_code!(RespStatusCode::FourXX);
+impl_response_status_code!(RespStatusCode::FiveXX);
+impl_response_status_code!(RespStatusCode::Unknown);
+
+impl Default for RespStatusCode {
+    fn default() -> Self {
+        Self::unknown("Unknown")
+    }
+}
+
+impl RespStatusCode {
+    pub fn parse(code: &str, msg: &str) -> Result<Self, io::Error> {
+        let num: u16 = code.parse().map_err(io::Error::other)?;
+
+        let msg = &format!("{num} {msg}");
+        Ok(match num {
+            n if n >= 600 => Self::unknown(msg),
+            n if n >= 500 => Self::five(msg),
+            n if n >= 400 => Self::four(msg),
+            n if n >= 300 => Self::three(msg),
+            n if n >= 200 => Self::two(msg),
+            _ => Self::unknown(msg),
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct StatusLine {
+    code: RespStatusCode,
+    http_version: String,
+}
+
+impl FromStr for StatusLine {
+    type Err = io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let triplet: Vec<&str> = s.splitn(3, ' ').map(str::trim).collect();
+        if triplet.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("status data not complete: {s}"),
+            ));
+        }
+        let code = RespStatusCode::parse(triplet[0], triplet[1])?;
+
+        Ok(Self {
+            code,
+            http_version: triplet[2].into(),
+        })
+    }
+}
+#[derive(Debug, Default)]
+struct Resp {
+    status: StatusLine,
+    headers: Vec<String>,
+    data: Option<String>,
+    raw_resp: String,
+}
+
+impl Resp {
+    pub fn resp(mut self, response_raw_str: &str) -> Self {
+        self.raw_resp = response_raw_str.into();
+        self
+    }
+
+    pub fn parse(mut self) -> Result<Self, io::Error> {
+        let mut lines = self.raw_resp.split('\n');
+        let status_line = lines.next().ok_or(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Error: invalid data, no status line found"),
+        ))?;
+        self.status = StatusLine::from_str(status_line)?;
+
+        let mut headers = Vec::new();
+        while let Some(header) = lines.next()
+            && !header.is_empty()
+        {
+            headers.push(header.trim());
+        }
+        self.headers = headers.into_iter().map(Into::into).collect();
+
+        let mut data = Vec::new();
+        while let Some(d) = lines.next() {
+            data.push(d);
+        }
+
+        self.data = if data.len() > 0 {
+            Some(data.join("\n"))
+        } else {
+            None
+        };
+
+        Ok(self)
+    }
 }
 
 macro_rules! define_it {
@@ -234,7 +350,7 @@ impl ReqBuilder {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn error::Error>> {
     use std::net::TcpStream;
     use std::str::FromStr;
     let (args, mut remainder) = Args::parse()?;
@@ -291,6 +407,7 @@ fn main() -> anyhow::Result<()> {
             match res {
                 Ok(0) => break,
                 Ok(len) => {
+                    // TODO: should use correct encode/decode method to parse instead of uft8 default
                     let response = String::from_utf8_lossy(&buf[..len]);
                     println!("\n\nresponse: \n{response}\n\n");
                 }

@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-mea = "0.5"
-paste = "1.0.15"
-# sarge = { version = "8" }
-sarge = { git = "https://github.com/Kyllingene/sarge.git" }
+# anyhow = "1"
+# mea = "0.5"
+pastey = "0.2"
+sarge = { path = "/Users/unic/dev/projs/rs/sarge" }
 smol = "2"
