@@ -1,4 +1,3 @@
-use core::{error, fmt, str};
 /// 任务 1：最小 HTTP 客户端
 /// 目标
 /// 理解 TCP 连接 + HTTP/1.1 请求/响应基本格式。
@@ -21,10 +20,10 @@ use core::{error, fmt, str};
 /// 建议反馈方式
 /// 终端日志：清晰展示“连接 → 发送请求 → 接收 + 解析响应”的过程。
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
+use core::error;
 use std::{
     io::{BufReader, BufWriter, Read, Write},
-    net::SocketAddr,
-    str::FromStr,
+    net::{SocketAddr, TcpStream},
     thread,
 };
 
@@ -43,26 +42,38 @@ mod request;
 mod response;
 
 pub fn run() -> Result<(), Box<dyn error::Error>> {
-    use std::net::TcpStream;
+    let (args, remainder) = cmd::parse()?;
+
     use std::str::FromStr;
-    let (args, mut remainder) = Args::parse()?;
-    if args.help.ok().is_some_and(|b| b) {
-        let help = Args::help();
-        println!("{help}");
-        return Ok(());
-    }
+    let target_socket = SocketAddr::from_str(&args.target_addr.clone().unwrap())?;
 
-    remainder.remove(0); // remove the executable path
+    let (buf_tx, buf_rx) = connect(target_socket)?;
 
-    println!("{args:#?}\n{remainder:?}\n\n");
-    // let bind_socket = SocketAddr::from_str(&args.socket_addr)?;
-    let target_socket = SocketAddr::from_str(&args.target_addr.unwrap())?;
+    let (headers, data) = collect(args, remainder);
 
-    let tcp_stream = TcpStream::connect(target_socket)?;
-    let tcp_tx = tcp_stream.try_clone()?;
-    let buf_tx = BufWriter::new(tcp_tx);
-    let buf_rx = BufReader::new(tcp_stream);
+    let req_content = ReqBuilder::new()
+        .get("/abc")
+        .headers(headers.iter())
+        .data(&data)
+        .build();
 
+    println!("\n\nrequest: \n{req_content}");
+
+    let send_task = write(buf_tx, req_content);
+    let recv_task = recv(buf_rx);
+
+    send_task
+        .join()
+        .expect("should be successfully write the data");
+
+    recv_task
+        .join()
+        .expect("should be successfully read the data");
+
+    Ok(())
+}
+
+fn collect(args: Args, remainder: Vec<String>) -> (HeadersArg, String) {
     let headers = if let Some(mut headers) = args.headers {
         headers.extend(remainder);
         headers
@@ -70,27 +81,27 @@ pub fn run() -> Result<(), Box<dyn error::Error>> {
         HeadersArg(remainder)
     };
 
-    let data = &(if let Some(d) = args.data { d } else { vec![] }).join("\n");
+    let data = (if let Some(d) = args.data { d } else { vec![] }).join("\n");
+    (headers, data)
+}
 
-    let req_content = ReqBuilder::new()
-        .get("/abc")
-        .headers(headers.iter())
-        .data(data)
-        .build();
+fn connect(
+    target_socket: SocketAddr,
+) -> Result<
+    (
+        BufWriter<std::net::TcpStream>,
+        BufReader<std::net::TcpStream>,
+    ),
+    Box<dyn error::Error + 'static>,
+> {
+    let tcp_stream = TcpStream::connect(target_socket)?;
+    let tcp_tx = tcp_stream.try_clone()?;
+    let buf_tx = BufWriter::new(tcp_tx);
+    let buf_rx = BufReader::new(tcp_stream);
+    Ok((buf_tx, buf_rx))
+}
 
-    println!("\n\nrequest: \n{req_content}");
-
-    let send_task = thread::spawn(move || {
-        use std::net::Shutdown;
-        let mut buf_tx = buf_tx;
-        let res = buf_tx.write_all(req_content.as_bytes());
-        if res.is_ok() {
-            let _ = buf_tx.flush();
-            let _ = buf_tx.get_ref().shutdown(Shutdown::Write);
-        }
-        let _ = dbg!(res);
-    });
-
+fn recv(buf_rx: BufReader<std::net::TcpStream>) -> thread::JoinHandle<()> {
     let recv_task = thread::spawn(move || {
         let mut buf_rx = buf_rx;
         let mut buf = [0_u8; 2048];
@@ -124,14 +135,19 @@ pub fn run() -> Result<(), Box<dyn error::Error>> {
             }
         }
     });
-
-    send_task
-        .join()
-        .expect("should be successfully write the data");
-
     recv_task
-        .join()
-        .expect("should be successfully read the data");
+}
 
-    Ok(())
+fn write(buf_tx: BufWriter<std::net::TcpStream>, req_content: String) -> thread::JoinHandle<()> {
+    let send_task = thread::spawn(move || {
+        use std::net::Shutdown;
+        let mut buf_tx = buf_tx;
+        let res = buf_tx.write_all(req_content.as_bytes());
+        if res.is_ok() {
+            let _ = buf_tx.flush();
+            let _ = buf_tx.get_ref().shutdown(Shutdown::Write);
+        }
+        let _ = dbg!(res);
+    });
+    send_task
 }

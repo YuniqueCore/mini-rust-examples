@@ -2,7 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use sarge::{ArgParseError, ArgumentType};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HeadersArg(pub Vec<String>);
 
 impl ArgumentType for HeadersArg {
