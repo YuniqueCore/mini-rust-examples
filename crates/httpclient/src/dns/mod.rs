@@ -23,6 +23,7 @@ pub struct DnsResolver {
     cache_check_time: Duration,
     cache_handle: Option<JoinHandle<()>>,
     local_dns_resolver: LocalDnsResolver,
+    remote_dns_resolver: LocalDnsResolver,
 
     servers: Vec<String>,
     timeoout: Duration,
@@ -36,6 +37,7 @@ impl Default for DnsResolver {
             cache_check_time: Duration::from_secs(1),
             cache_handle: None,
             local_dns_resolver: LocalDnsResolver::new(Option::<String>::None),
+            remote_dns_resolver: LocalDnsResolver::new(Option::<String>::None),
             servers: vec![],
             timeoout: Duration::from_secs(3),
             retry: 3,
@@ -69,9 +71,9 @@ impl DnsResolver {
     }
 
     pub fn start_cache_monitor(mut self) -> Self {
-        let dns_cache = self.cache.clone();
         let check_time = self.cache_check_time;
 
+        let dns_cache = self.cache.clone();
         let clean_handler = std::thread::spawn(move || {
             let mut dns_cache_lock = dns_cache.lock().unwrap();
 
@@ -96,6 +98,10 @@ impl DnsResolver {
     fn __local_resolve(&self, domain: &str) -> Option<&IpAddr> {
         self.local_dns_resolver.resolve(domain)
     }
+    // TODO:
+    fn __remote_solve(&self, domain: &str) -> Option<&IpAddr> {
+        self.local_dns_resolver.resolve(domain)
+    }
 
     pub fn resolve(&self, socket_addr: &str) -> Option<SocketAddr> {
         if let Ok(addr) = SocketAddr::from_str(socket_addr) {
@@ -105,13 +111,29 @@ impl DnsResolver {
         if let Some((domain, port)) = socket_addr.split_once(':') {
             let port: u16 = port.parse().ok()?;
 
-            let cache = self.cache.lock().ok()?;
+            // 1. get the cache
+            let mut cache = self.cache.lock().ok()?;
             if let Some(ip) = cache.get(domain) {
                 let socket_addr = SocketAddr::new(*ip, port);
                 return Some(socket_addr);
             };
+
+            // 2. get the local
+            if let Some(ip) = self.__local_resolve(domain) {
+                let _ = cache.insert(Host::new(&ip.to_string(), domain).ok()?);
+                let socket_addr = SocketAddr::new(*ip, port);
+                return Some(socket_addr);
+            }
+
+            // 3. get the remote
+            if let Some(ip) = self.__remote_solve(domain) {
+                let _ = cache.insert(Host::new(&ip.to_string(), domain).ok()?);
+                let socket_addr = SocketAddr::new(*ip, port);
+                return Some(socket_addr);
+            }
         };
 
+        // 4. fallback to None
         None
     }
 }
