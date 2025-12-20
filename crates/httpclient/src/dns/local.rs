@@ -1,9 +1,10 @@
 use crate::dns::Host;
 use crate::error::Result;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::OpenOptions,
-    io::Read,
+    io::{BufRead, BufReader},
+    net::IpAddr,
     path::PathBuf,
 };
 
@@ -12,17 +13,61 @@ const DEFAULT_HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
 #[cfg(not(windows))]
 const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
 
+#[derive(Debug)]
 pub struct LocalDnsResolver {
-    mapping: HashSet<Host>,
+    /// domain ip
+    hosts: HashMap<String, IpAddr>,
 }
 
 impl LocalDnsResolver {
-    fn parse_host(host_path: &PathBuf) -> Result<HashSet<Host>> {
-        let mut hosts = HashSet::new();
-        let content = OpenOptions::new().read(true).open(host_path)?;
-        content.re
+    pub fn new(host_path: Option<impl Into<PathBuf>>) -> Self {
+        if let Some(host_path) = host_path {
+            let path = host_path.into();
+            if path.exists()
+                && let Ok(hosts) = parse_host(path)
+            {
+                return Self { hosts };
+            }
+        }
+
+        if let Ok(hosts) = parse_host(DEFAULT_HOSTS_PATH.into()) {
+            return Self { hosts };
+        }
+
+        Self {
+            hosts: HashMap::new(),
+        }
     }
-    pub fn new(host_path: impl Into<PathBuf>) -> Self {
-        if host_path.into().exists() {}
+
+    pub fn resolve(&self, domain: &str) -> Option<&IpAddr> {
+        self.hosts.get(domain.trim())
     }
+}
+
+fn parse_host(host_path: PathBuf) -> Result<HashMap<String, IpAddr>> {
+    let mut hosts = HashMap::new();
+    let content = OpenOptions::new().read(true).open(host_path)?;
+    let mut reader = BufReader::new(content);
+
+    let mut line = String::new();
+    while let Ok(num_bytes) = reader.read_line(&mut line) {
+        if num_bytes == 0 {
+            break;
+        }
+
+        if line.trim().starts_with('#') {
+            continue;
+        }
+
+        let ip_host: Vec<&str> = line.split_whitespace().collect();
+        if ip_host.len() < 2 {
+            continue;
+        }
+
+        if let Ok(host) = Host::new(ip_host[0], ip_host[1]) {
+            let _old = hosts.insert(host.domain().into(), *host.ip());
+        }
+    }
+
+    Ok(hosts)
 }

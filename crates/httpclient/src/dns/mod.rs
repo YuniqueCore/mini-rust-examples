@@ -2,33 +2,28 @@ use crate::error::Result;
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
     time::Duration,
 };
 
+mod cache;
+mod host;
 mod local;
+mod remote;
 
+pub use cache::*;
+pub use host::*;
 pub use local::*;
-
-/// 127.0.0.1       localhost
-#[derive(Debug)]
-pub struct Host(IpAddr, String);
-
-impl Host {
-    pub fn new(ip: &str, domain: &str) -> Result<Self> {
-        Ok(Host(ip.parse()?, domain.into()))
-    }
-
-    pub fn ip(&self) -> &IpAddr {
-        &self.0
-    }
-
-    pub fn domain(&self) -> &str {
-        &self.1
-    }
-}
+pub use remote::*;
 
 #[derive(Debug)]
 pub struct DnsResolver {
+    cache: Arc<Mutex<DnsCache>>,
+    cache_check_time: Duration,
+    cache_handle: Option<JoinHandle<()>>,
+    local_dns_resolver: LocalDnsResolver,
+
     servers: Vec<String>,
     timeoout: Duration,
     retry: u8,
@@ -37,6 +32,10 @@ pub struct DnsResolver {
 impl Default for DnsResolver {
     fn default() -> Self {
         Self {
+            cache: Arc::new(Mutex::new(DnsCache::new())),
+            cache_check_time: Duration::from_secs(1),
+            cache_handle: None,
+            local_dns_resolver: LocalDnsResolver::new(Option::<String>::None),
             servers: vec![],
             timeoout: Duration::from_secs(3),
             retry: 3,
@@ -47,6 +46,11 @@ impl Default for DnsResolver {
 impl DnsResolver {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn local_resolver(mut self, local_resolver: LocalDnsResolver) -> Self {
+        self.local_dns_resolver = local_resolver;
+        self
     }
 
     pub fn servers(mut self, servers: impl Into<Vec<String>>) -> Self {
@@ -64,9 +68,50 @@ impl DnsResolver {
         self
     }
 
-    pub fn resolve(socket_addr: &str) -> Result<SocketAddr> {
-        if Ok(addr) = SocketAddr::from_str(socket_addr) {
-            return Ok(addr);
+    pub fn start_cache_monitor(mut self) -> Self {
+        let dns_cache = self.cache.clone();
+        let check_time = self.cache_check_time;
+
+        let clean_handler = std::thread::spawn(move || {
+            let mut dns_cache_lock = dns_cache.lock().unwrap();
+
+            loop {
+                let liveness = dns_cache_lock.liveness.clone();
+
+                for (domain, ctime) in liveness.iter() {
+                    if let Ok(elapsed) = ctime.elapsed()
+                        && elapsed > dns_cache_lock.duration
+                    {
+                        dns_cache_lock.remove(domain);
+                    }
+                }
+                std::thread::sleep(check_time);
+            }
+        });
+
+        self.cache_handle = Some(clean_handler);
+        self
+    }
+
+    fn __local_resolve(&self, domain: &str) -> Option<&IpAddr> {
+        self.local_dns_resolver.resolve(domain)
+    }
+
+    pub fn resolve(&self, socket_addr: &str) -> Option<SocketAddr> {
+        if let Ok(addr) = SocketAddr::from_str(socket_addr) {
+            return Some(addr);
         }
+
+        if let Some((domain, port)) = socket_addr.split_once(':') {
+            let port: u16 = port.parse().ok()?;
+
+            let cache = self.cache.lock().ok()?;
+            if let Some(ip) = cache.get(domain) {
+                let socket_addr = SocketAddr::new(*ip, port);
+                return Some(socket_addr);
+            };
+        };
+
+        None
     }
 }
