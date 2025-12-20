@@ -20,7 +20,6 @@
 /// 建议反馈方式
 /// 终端日志：清晰展示“连接 → 发送请求 → 接收 + 解析响应”的过程。
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
-use core::error;
 use std::{
     io::{BufReader, BufWriter, Read, Write},
     net::{SocketAddr, TcpStream},
@@ -38,10 +37,13 @@ mod cmd;
 mod common;
 mod r#const;
 mod dns;
+mod error;
 mod request;
 mod response;
 
-pub fn run() -> Result<(), Box<dyn error::Error>> {
+use error::Result;
+
+pub fn run() -> Result<()> {
     let (args, remainder) = cmd::parse()?;
 
     use std::str::FromStr;
@@ -87,13 +89,10 @@ fn collect(args: Args, remainder: Vec<String>) -> (HeadersArg, String) {
 
 fn connect(
     target_socket: SocketAddr,
-) -> Result<
-    (
-        BufWriter<std::net::TcpStream>,
-        BufReader<std::net::TcpStream>,
-    ),
-    Box<dyn error::Error + 'static>,
-> {
+) -> Result<(
+    BufWriter<std::net::TcpStream>,
+    BufReader<std::net::TcpStream>,
+)> {
     let tcp_stream = TcpStream::connect(target_socket)?;
     let tcp_tx = tcp_stream.try_clone()?;
     let buf_tx = BufWriter::new(tcp_tx);
