@@ -2,14 +2,18 @@ use std::{
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream, UdpSocket},
     time::Duration,
+    u16,
 };
 
-use crate::error::{Error, Result};
+use crate::{
+    dns::remote::response,
+    error::{Error, Result},
+};
 
-const QTYPE_A: u16 = 1;
-const QTYPE_AAAA: u16 = 28;
-const QCLASS_IN: u16 = 1;
-const QNAME_MAX_LEN: u8 = 63;
+pub const QTYPE_A: u16 = 1;
+pub const QTYPE_AAAA: u16 = 28;
+pub const QCLASS_IN: u16 = 1;
+pub const QNAME_MAX_LEN: u8 = 63;
 
 #[derive(Debug, Clone)]
 pub enum QType {
@@ -58,8 +62,13 @@ impl DnsQueryClient {
         self
     }
 
-    fn udp_query(&self, name: &str, qtype: QType, server: SocketAddr) -> Result<(Vec<u8>, bool)> {
-        let (_id, query) = build_query(name, qtype.into())?;
+    fn udp_query(
+        &self,
+        name: &str,
+        qtype: u16,
+        server: SocketAddr,
+    ) -> Result<(Vec<u8>, u16, bool)> {
+        let (id, query) = build_query(name, qtype)?;
 
         let udp_socket = UdpSocket::bind(self.bind_addr)?;
         udp_socket.set_read_timeout(Some(self.timeout)).ok();
@@ -72,11 +81,11 @@ impl DnsQueryClient {
         // 如果 TC=1，需要 TCP
         // let (_ips, _ttl, tc) = parse_response(resp, id, qtype)?;
         let tc = false;
-        Ok((resp.to_vec(), tc))
+        Ok((resp.to_vec(), id, tc))
     }
 
-    fn tcp_query(&self, name: &str, qtype: QType, server: SocketAddr) -> Result<Vec<u8>> {
-        let (_id, query) = build_query(name, qtype.into())?;
+    fn tcp_query(&self, name: &str, qtype: u16, server: SocketAddr) -> Result<(Vec<u8>, u16)> {
+        let (id, query) = build_query(name, qtype)?;
 
         let timeout = self.timeout;
 
@@ -95,19 +104,28 @@ impl DnsQueryClient {
 
         let mut rbuf = vec![0u8; rlen];
         stream.read_exact(&mut rbuf)?;
-        Ok(rbuf)
+        Ok((rbuf, id))
     }
 
-    pub fn query(&self, domain: &str, server: SocketAddr) -> Option<IpAddr> {
-        if let Ok((_resp, tc)) = self.udp_query(domain, QType::A, server) {
-            dbg!("udp response:", String::from_utf8_lossy(&_resp[..]));
+    pub fn query(&self, domain: &str, qtype: QType, server: SocketAddr) -> Option<Vec<IpAddr>> {
+        let mut resp = Vec::new();
+        let mut id = u16::MAX;
+        let qtype: u16 = qtype.into();
+
+        if let Ok((udp_resp, udp_id, tc)) = self.udp_query(domain, qtype, server) {
             if tc {
-                let resp = self.tcp_query(domain, QType::A, server).ok()?;
-                dbg!("tcp response:", String::from_utf8_lossy(&resp[..]));
+                let (tcp_resp, tcp_id) = self.tcp_query(domain, qtype, server).ok()?;
+                resp = tcp_resp;
+                id = tcp_id;
+            } else {
+                resp = udp_resp;
+                id = udp_id;
             }
         }
 
-        None
+        let (ips, _min_ttl, _tc) = response::parse(&resp, id, qtype).ok()?;
+
+        Some(ips)
     }
 }
 
@@ -162,14 +180,19 @@ fn build_query(name: &str, qtype: u16) -> Result<(u16, Vec<u8>)> {
 mod tests {
     use std::time::Duration;
 
-    use crate::{dns::remote::query::DnsQueryClient, error::Result};
+    use crate::{
+        dns::remote::query::{DnsQueryClient, QType},
+        error::Result,
+    };
     #[test]
     fn test_query() -> Result<()> {
         let dns_query_client = DnsQueryClient::new().with_timeout(Duration::from_secs(2));
 
         let server = "1.1.1.1:53".parse().unwrap();
 
-        dns_query_client.query("www.baidu", server);
+        let rest = dns_query_client.query("google.com", QType::A, server);
+
+        dbg!(rest);
         Ok(())
     }
 }

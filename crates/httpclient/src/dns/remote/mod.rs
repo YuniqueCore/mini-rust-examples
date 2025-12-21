@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 mod query;
+mod response;
 
 const DEFAULT_DNS_SERVERS: &[&str] = &["8.8.8.8:53", "1.1.1.1:53"];
 
