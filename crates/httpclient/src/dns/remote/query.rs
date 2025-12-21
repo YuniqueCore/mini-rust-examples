@@ -1,4 +1,8 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    io::{Read, Write},
+    net::{IpAddr, SocketAddr, TcpStream, UdpSocket},
+    time::Duration,
+};
 
 use crate::error::{Error, Result};
 
@@ -7,8 +11,24 @@ const QTYPE_AAAA: u16 = 28;
 const QCLASS_IN: u16 = 1;
 const QNAME_MAX_LEN: u8 = 63;
 
+#[derive(Debug, Clone)]
+pub enum QType {
+    A,
+    AAAA,
+}
+
+impl From<QType> for u16 {
+    fn from(value: QType) -> Self {
+        match value {
+            QType::A => QTYPE_A,
+            QType::AAAA => QTYPE_AAAA,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DnsQueryClient {
+    bind_addr: SocketAddr,
     timeout: Duration,
     retry: u8,
 }
@@ -16,6 +36,7 @@ pub struct DnsQueryClient {
 impl Default for DnsQueryClient {
     fn default() -> Self {
         Self {
+            bind_addr: "0.0.0.0:0".parse().unwrap(),
             timeout: Duration::from_secs(2),
             retry: 3,
         }
@@ -37,7 +58,55 @@ impl DnsQueryClient {
         self
     }
 
-    pub fn query(&self, domain: &str) -> Option<IpAddr> {
+    fn udp_query(&self, name: &str, qtype: QType, server: SocketAddr) -> Result<(Vec<u8>, bool)> {
+        let (_id, query) = build_query(name, qtype.into())?;
+
+        let udp_socket = UdpSocket::bind(self.bind_addr)?;
+        udp_socket.set_read_timeout(Some(self.timeout)).ok();
+        udp_socket.send_to(&query, server)?;
+
+        let mut buf = [0u8; 2048];
+        let (n, _from) = udp_socket.recv_from(&mut buf)?;
+        let resp = &buf[..n];
+
+        // 如果 TC=1，需要 TCP
+        // let (_ips, _ttl, tc) = parse_response(resp, id, qtype)?;
+        let tc = false;
+        Ok((resp.to_vec(), tc))
+    }
+
+    fn tcp_query(&self, name: &str, qtype: QType, server: SocketAddr) -> Result<Vec<u8>> {
+        let (_id, query) = build_query(name, qtype.into())?;
+
+        let timeout = self.timeout;
+
+        // TCP: 前两字节长度
+        let mut stream = TcpStream::connect(server)?;
+        stream.set_read_timeout(Some(timeout)).ok();
+        stream.set_write_timeout(Some(timeout)).ok();
+
+        let len = (query.len() as u16).to_be_bytes();
+        stream.write_all(&len)?;
+        stream.write_all(&query)?;
+
+        let mut lbuf = [0u8; 2];
+        stream.read_exact(&mut lbuf)?;
+        let rlen = u16::from_be_bytes(lbuf) as usize;
+
+        let mut rbuf = vec![0u8; rlen];
+        stream.read_exact(&mut rbuf)?;
+        Ok(rbuf)
+    }
+
+    pub fn query(&self, domain: &str, server: SocketAddr) -> Option<IpAddr> {
+        if let Ok((_resp, tc)) = self.udp_query(domain, QType::A, server) {
+            dbg!("udp response:", String::from_utf8_lossy(&_resp[..]));
+            if tc {
+                let resp = self.tcp_query(domain, QType::A, server).ok()?;
+                dbg!("tcp response:", String::from_utf8_lossy(&resp[..]));
+            }
+        }
+
         None
     }
 }
@@ -65,11 +134,11 @@ fn gen_id() -> u16 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    // 简易“随机”，足够 demo；生产建议 OS 随机源（但那通常要 crate）
+    // 简易“随机”
     (n as u16) ^ ((n >> 16) as u16)
 }
 
-fn build_query(name: &str, qtype: u16) -> Result<(u16, Vec<u8>), ()> {
+fn build_query(name: &str, qtype: u16) -> Result<(u16, Vec<u8>)> {
     let id = gen_id();
     let mut pkt = Vec::with_capacity(512);
 
@@ -87,4 +156,20 @@ fn build_query(name: &str, qtype: u16) -> Result<(u16, Vec<u8>), ()> {
     pkt.extend_from_slice(&QCLASS_IN.to_be_bytes());
 
     Ok((id, pkt))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::{dns::remote::query::DnsQueryClient, error::Result};
+    #[test]
+    fn test_query() -> Result<()> {
+        let dns_query_client = DnsQueryClient::new().with_timeout(Duration::from_secs(2));
+
+        let server = "1.1.1.1:53".parse().unwrap();
+
+        dns_query_client.query("www.baidu", server);
+        Ok(())
+    }
 }
