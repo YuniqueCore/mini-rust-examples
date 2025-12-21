@@ -1,19 +1,19 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::error::{self, Result};
+
 use super::query::{QTYPE_A, QTYPE_AAAA};
 
-pub fn parse(
-    pkt: &[u8],
-    expect_id: u16,
-    qtype: u16,
-) -> Result<(Vec<IpAddr>, u32, bool /*tc*/), ()> {
+pub fn parse(pkt: &[u8], expect_id: u16, qtype: u16) -> Result<(Vec<IpAddr>, u32, bool /*tc*/)> {
     if pkt.len() < 12 {
-        return Err(());
+        return Err(error::Error::addr("response pkt len less than 12").into());
     }
 
     let id = u16::from_be_bytes([pkt[0], pkt[1]]);
     if id != expect_id {
-        return Err(());
+        return Err(
+            error::Error::addr(format!("response id not match: {id} != {expect_id}")).into(),
+        );
     }
 
     let flags = u16::from_be_bytes([pkt[2], pkt[3]]);
@@ -47,8 +47,11 @@ pub fn parse(
         let ttl = read_u32(pkt, &mut off)?;
         let rdlen = read_u16(pkt, &mut off)? as usize;
 
-        if off + rdlen > pkt.len() {
-            return Err(());
+        let expect_len = off + rdlen;
+        if expect_len > pkt.len() {
+            return Err(
+                error::Error::addr(format!("response pkt len less than {expect_len}")).into(),
+            );
         }
 
         if typ == qtype {
@@ -73,25 +76,28 @@ pub fn parse(
     Ok((ips, min_ttl.unwrap_or(60), tc))
 }
 
-fn read_u16(pkt: &[u8], off: &mut usize) -> Result<u16, ()> {
-    if *off + 2 > pkt.len() {
-        return Err(());
+fn read_u16(pkt: &[u8], off: &mut usize) -> Result<u16> {
+    let offset_len = *off + 2;
+    if offset_len > pkt.len() {
+        return Err(error::Error::addr(format!("response pkt len less than {offset_len}")).into());
     }
     let v = u16::from_be_bytes([pkt[*off], pkt[*off + 1]]);
     *off += 2;
     Ok(v)
 }
 
-fn read_u32(pkt: &[u8], off: &mut usize) -> Result<u32, ()> {
-    if *off + 4 > pkt.len() {
-        return Err(());
+fn read_u32(pkt: &[u8], off: &mut usize) -> Result<u32> {
+    let offset_len = *off + 4;
+
+    if offset_len > pkt.len() {
+        return Err(error::Error::addr(format!("response pkt len less than {offset_len}")).into());
     }
     let v = u32::from_be_bytes([pkt[*off], pkt[*off + 1], pkt[*off + 2], pkt[*off + 3]]);
     *off += 4;
     Ok(v)
 }
 
-fn read_name(pkt: &[u8], off: &mut usize) -> Result<String, ()> {
+fn read_name(pkt: &[u8], off: &mut usize) -> Result<String> {
     let mut labels = Vec::new();
     let mut jumped = false;
     let mut cur = *off;
@@ -100,18 +106,18 @@ fn read_name(pkt: &[u8], off: &mut usize) -> Result<String, ()> {
     loop {
         guard += 1;
         if guard > 128 {
-            return Err(());
+            return Err(error::Error::addr(format!("guard len great than 128")).into());
         } // 防止恶意循环指针
 
         if cur >= pkt.len() {
-            return Err(());
+            return Err(error::Error::addr(format!("pkt len less than {cur}")).into());
         }
         let len = pkt[cur];
 
         // pointer: 11xxxxxx xxxxxxxx
         if (len & 0xC0) == 0xC0 {
             if cur + 1 >= pkt.len() {
-                return Err(());
+                return Err(error::Error::addr(format!("pkt len less than {cur} + 1")).into());
             }
             let b2 = pkt[cur + 1];
             let ptr = (((len as u16 & 0x3F) << 8) | b2 as u16) as usize;
@@ -135,9 +141,9 @@ fn read_name(pkt: &[u8], off: &mut usize) -> Result<String, ()> {
         let l = len as usize;
         cur += 1;
         if cur + l > pkt.len() {
-            return Err(());
+            return Err(error::Error::addr(format!("pkt len less than {cur} + {l}")).into());
         }
-        let label = std::str::from_utf8(&pkt[cur..cur + l]).map_err(|_| ())?;
+        let label = std::str::from_utf8(&pkt[cur..cur + l])?;
         labels.push(label.to_string());
         cur += l;
     }

@@ -1,8 +1,9 @@
 use std::{
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream, UdpSocket},
+    thread,
     time::Duration,
-    u16,
+    u16, u32,
 };
 
 use crate::{
@@ -107,7 +108,12 @@ impl DnsQueryClient {
         Ok((rbuf, id))
     }
 
-    pub fn query(&self, domain: &str, qtype: QType, server: SocketAddr) -> Option<Vec<IpAddr>> {
+    pub fn query_once(
+        &self,
+        domain: &str,
+        qtype: QType,
+        server: SocketAddr,
+    ) -> Option<Vec<IpAddr>> {
         let mut resp = Vec::new();
         let mut id = u16::MAX;
         let qtype: u16 = qtype.into();
@@ -126,6 +132,34 @@ impl DnsQueryClient {
         let (ips, _min_ttl, _tc) = response::parse(&resp, id, qtype).ok()?;
 
         Some(ips)
+    }
+
+    pub async fn query(
+        &self,
+        domain: &str,
+        qtype: QType,
+        server: SocketAddr,
+    ) -> Option<Vec<IpAddr>> {
+        let mut ips = Vec::new();
+        let mut min_ttl = u32::MIN;
+        let mut tc = false;
+        let qtype: u16 = qtype.into();
+        let query_handle = thread::spawn(move || {
+            let mut resp = Vec::new();
+            let mut id = u16::MAX;
+            if let Ok((udp_resp, udp_id, tc)) = self.udp_query(domain, qtype, server) {
+                if tc && let Ok((tcp_resp, tcp_id)) = self.tcp_query(domain, qtype, server) {
+                    resp = tcp_resp;
+                    id = tcp_id;
+                } else {
+                    resp = udp_resp;
+                    id = udp_id;
+                }
+            }
+            Ok(response::parse(&resp, id, qtype)?)
+        });
+
+        if ips.len() < 1 { Some(ips) } else { None }
     }
 }
 
@@ -190,7 +224,7 @@ mod tests {
 
         let server = "1.1.1.1:53".parse().unwrap();
 
-        let rest = dns_query_client.query("google.com", QType::A, server);
+        let rest = dns_query_client.query_once("google.com", QType::A, server);
 
         dbg!(rest);
         Ok(())
