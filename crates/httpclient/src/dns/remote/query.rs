@@ -1,9 +1,12 @@
 use std::{
+    future::Future,
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream, UdpSocket},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
     thread,
     time::Duration,
-    u16, u32,
 };
 
 use crate::{
@@ -31,7 +34,7 @@ impl From<QType> for u16 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsQueryClient {
     bind_addr: SocketAddr,
     timeout: Duration,
@@ -108,15 +111,10 @@ impl DnsQueryClient {
         Ok((rbuf, id))
     }
 
-    pub fn query_once(
-        &self,
-        domain: &str,
-        qtype: QType,
-        server: SocketAddr,
-    ) -> Option<Vec<IpAddr>> {
+    fn query_once(&self, domain: &str, qtype: QType, server: SocketAddr) -> Option<Vec<IpAddr>> {
         let mut resp = Vec::new();
         let mut id = u16::MAX;
-        let qtype: u16 = qtype.into();
+        let qtype = qtype.into();
 
         if let Ok((udp_resp, udp_id, tc)) = self.udp_query(domain, qtype, server) {
             if tc {
@@ -140,26 +138,49 @@ impl DnsQueryClient {
         qtype: QType,
         server: SocketAddr,
     ) -> Option<Vec<IpAddr>> {
-        let mut ips = Vec::new();
-        let mut min_ttl = u32::MIN;
-        let mut tc = false;
-        let qtype: u16 = qtype.into();
-        let query_handle = thread::spawn(move || {
-            let mut resp = Vec::new();
-            let mut id = u16::MAX;
-            if let Ok((udp_resp, udp_id, tc)) = self.udp_query(domain, qtype, server) {
-                if tc && let Ok((tcp_resp, tcp_id)) = self.tcp_query(domain, qtype, server) {
-                    resp = tcp_resp;
-                    id = tcp_id;
-                } else {
-                    resp = udp_resp;
-                    id = udp_id;
-                }
+        let domain = domain.to_string();
+        let client = self.clone();
+        let state = Arc::new(Mutex::new(QueryState {
+            result: None,
+            waker: None,
+        }));
+        let state_for_thread = state.clone();
+
+        thread::spawn(move || {
+            let result = client.query_once(&domain, qtype, server);
+            let waker = {
+                let mut state = state_for_thread.lock().unwrap();
+                state.result = Some(result);
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
             }
-            Ok(response::parse(&resp, id, qtype)?)
         });
 
-        if ips.len() < 1 { Some(ips) } else { None }
+        QueryFuture { state }.await
+    }
+}
+
+struct QueryState {
+    result: Option<Option<Vec<IpAddr>>>,
+    waker: Option<Waker>,
+}
+
+struct QueryFuture {
+    state: Arc<Mutex<QueryState>>,
+}
+
+impl Future for QueryFuture {
+    type Output = Option<Vec<IpAddr>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(result) = state.result.take() {
+            return Poll::Ready(result);
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
@@ -212,12 +233,129 @@ fn build_query(name: &str, qtype: u16) -> Result<(u16, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::Arc,
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+        thread,
+        time::Duration,
+    };
 
     use crate::{
         dns::remote::query::{DnsQueryClient, QType},
         error::Result,
     };
+
+    fn block_on<F: Future>(mut future: F) -> F::Output {
+        let waker = thread_waker(thread::current());
+        let mut cx = Context::from_waker(&waker);
+        // SAFETY: the future is pinned on the stack for the duration of this function.
+        let mut future = unsafe { Pin::new_unchecked(&mut future) };
+
+        loop {
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => thread::park(),
+            }
+        }
+    }
+
+    fn thread_waker(thread: thread::Thread) -> Waker {
+        let thread = Arc::new(thread);
+        // SAFETY: raw waker functions correctly manage the Arc lifetime.
+        unsafe { Waker::from_raw(raw_waker(thread)) }
+    }
+
+    fn raw_waker(thread: Arc<thread::Thread>) -> RawWaker {
+        RawWaker::new(Arc::into_raw(thread) as *const (), &RAW_WAKER_VTABLE)
+    }
+
+    static RAW_WAKER_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(raw_waker_clone, raw_waker_wake, raw_waker_wake_by_ref, raw_waker_drop);
+
+    unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
+        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
+        let cloned = thread.clone();
+        std::mem::forget(thread);
+        RawWaker::new(Arc::into_raw(cloned) as *const (), &RAW_WAKER_VTABLE)
+    }
+
+    unsafe fn raw_waker_wake(data: *const ()) {
+        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
+        thread.unpark();
+    }
+
+    unsafe fn raw_waker_wake_by_ref(data: *const ()) {
+        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
+        thread.unpark();
+        std::mem::forget(thread);
+    }
+
+    unsafe fn raw_waker_drop(data: *const ()) {
+        let _ = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
+    }
+
+    struct Join2<F1, F2>
+    where
+        F1: Future,
+        F2: Future,
+    {
+        f1: Pin<Box<F1>>,
+        f2: Pin<Box<F2>>,
+        out1: Option<F1::Output>,
+        out2: Option<F2::Output>,
+    }
+
+    impl<F1, F2> Unpin for Join2<F1, F2>
+    where
+        F1: Future,
+        F2: Future,
+    {
+    }
+
+    fn join2<F1, F2>(f1: F1, f2: F2) -> Join2<F1, F2>
+    where
+        F1: Future,
+        F2: Future,
+    {
+        Join2 {
+            f1: Box::pin(f1),
+            f2: Box::pin(f2),
+            out1: None,
+            out2: None,
+        }
+    }
+
+    impl<F1, F2> Future for Join2<F1, F2>
+    where
+        F1: Future,
+        F2: Future,
+    {
+        type Output = (F1::Output, F2::Output);
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.as_mut().get_mut();
+
+            if this.out1.is_none() {
+                if let Poll::Ready(v) = this.f1.as_mut().poll(cx) {
+                    this.out1 = Some(v);
+                }
+            }
+
+            if this.out2.is_none() {
+                if let Poll::Ready(v) = this.f2.as_mut().poll(cx) {
+                    this.out2 = Some(v);
+                }
+            }
+
+            if this.out1.is_some() && this.out2.is_some() {
+                return Poll::Ready((this.out1.take().unwrap(), this.out2.take().unwrap()));
+            }
+
+            Poll::Pending
+        }
+    }
     #[test]
     fn test_query() -> Result<()> {
         let dns_query_client = DnsQueryClient::new().with_timeout(Duration::from_secs(2));
@@ -227,6 +365,21 @@ mod tests {
         let rest = dns_query_client.query_once("google.com", QType::A, server);
 
         dbg!(rest);
+        Ok(())
+    }
+
+    #[test]
+    fn test_query_concurrent_block_on() -> Result<()> {
+        let dns_query_client = DnsQueryClient::new().with_timeout(Duration::from_secs(2));
+        let server = "1.1.1.1:53".parse().unwrap();
+
+        let f1 = dns_query_client.query("example.com", QType::A, server);
+        let f2 = dns_query_client.query("google.com", QType::A, server);
+
+        let (r1, r2) = block_on(join2(f1, f2));
+
+        println!("result1: {r1:?}");
+        println!("result2: {r2:?}");
         Ok(())
     }
 }
