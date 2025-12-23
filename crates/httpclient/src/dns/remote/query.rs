@@ -271,8 +271,12 @@ mod tests {
         RawWaker::new(Arc::into_raw(thread) as *const (), &RAW_WAKER_VTABLE)
     }
 
-    static RAW_WAKER_VTABLE: RawWakerVTable =
-        RawWakerVTable::new(raw_waker_clone, raw_waker_wake, raw_waker_wake_by_ref, raw_waker_drop);
+    static RAW_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+        raw_waker_clone,
+        raw_waker_wake,
+        raw_waker_wake_by_ref,
+        raw_waker_drop,
+    );
 
     unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
         let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
@@ -362,6 +366,9 @@ mod tests {
 
         let server = "1.1.1.1:53".parse().unwrap();
 
+        let rest = dns_query_client.query_once("google.com", QType::A, server);
+
+        dbg!(rest);
         let rest = dns_query_client.query_once("google.com", QType::A, server);
 
         dbg!(rest);

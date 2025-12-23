@@ -23,7 +23,7 @@ pub struct DnsResolver {
     cache_check_time: Duration,
     cache_handle: Option<JoinHandle<()>>,
     local_dns_resolver: LocalDnsResolver,
-    remote_dns_resolver: LocalDnsResolver,
+    remote_dns_resolver: RemoteDnsResolver,
 
     servers: Vec<String>,
     timeoout: Duration,
@@ -37,7 +37,7 @@ impl Default for DnsResolver {
             cache_check_time: Duration::from_secs(1),
             cache_handle: None,
             local_dns_resolver: LocalDnsResolver::new(Option::<String>::None),
-            remote_dns_resolver: LocalDnsResolver::new(Option::<String>::None),
+            remote_dns_resolver: RemoteDnsResolver::new(Option::<Vec<_>>::None),
             servers: vec![],
             timeoout: Duration::from_secs(3),
             retry: 3,
@@ -99,11 +99,11 @@ impl DnsResolver {
         self.local_dns_resolver.resolve(domain)
     }
     // TODO:
-    fn __remote_solve(&self, domain: &str) -> Option<&IpAddr> {
-        self.local_dns_resolver.resolve(domain)
+    async fn __remote_solve(&self, domain: &str) -> Option<Vec<IpAddr>> {
+        self.remote_dns_resolver.resolve(domain).await
     }
 
-    pub fn resolve(&self, socket_addr: &str) -> Option<SocketAddr> {
+    pub async fn resolve(&self, socket_addr: &str) -> Option<SocketAddr> {
         if let Ok(addr) = SocketAddr::from_str(socket_addr) {
             return Some(addr);
         }
@@ -126,9 +126,10 @@ impl DnsResolver {
             }
 
             // 3. get the remote
-            if let Some(ip) = self.__remote_solve(domain) {
-                let _ = cache.insert(Host::new(&ip.to_string(), domain).ok()?);
-                let socket_addr = SocketAddr::new(*ip, port);
+            if let Some(ips) = self.__remote_solve(domain).await {
+                // TODO: need to re-design the Host which domain has multi-ips
+                let _ = cache.insert(Host::new(&ips[0].to_string(), domain).ok()?);
+                let socket_addr = SocketAddr::new(ips[0], port);
                 return Some(socket_addr);
             }
         };
