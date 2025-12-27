@@ -50,7 +50,9 @@ fn parse_host(host_path: PathBuf) -> Result<HashMap<String, IpAddr>> {
     let mut reader = BufReader::new(content);
 
     let mut line = String::new();
-    while let Ok(num_bytes) = reader.read_line(&mut line) {
+    loop {
+        line.clear();
+        let num_bytes = reader.read_line(&mut line)?;
         if num_bytes == 0 {
             break;
         }

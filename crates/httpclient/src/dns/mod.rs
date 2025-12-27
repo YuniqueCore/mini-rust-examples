@@ -1,9 +1,9 @@
-use crate::error::Result;
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
     sync::{Arc, Mutex},
     thread::JoinHandle,
+    time::SystemTime,
     time::Duration,
 };
 
@@ -66,7 +66,7 @@ impl DnsResolver {
     }
 
     pub fn retry(mut self, times: u8) -> Self {
-        self.retry == times;
+        self.retry = times;
         self
     }
 
@@ -75,16 +75,24 @@ impl DnsResolver {
 
         let dns_cache = self.cache.clone();
         let clean_handler = std::thread::spawn(move || {
-            let mut dns_cache_lock = dns_cache.lock().unwrap();
-
             loop {
-                let liveness = dns_cache_lock.liveness.clone();
+                let now = SystemTime::now();
+                {
+                    let mut dns_cache_lock =
+                        dns_cache.lock().unwrap_or_else(|poison| poison.into_inner());
 
-                for (domain, ctime) in liveness.iter() {
-                    if let Ok(elapsed) = ctime.elapsed()
-                        && elapsed > dns_cache_lock.duration
-                    {
-                        dns_cache_lock.remove(domain);
+                    let duration = dns_cache_lock.duration;
+                    let expired: Vec<String> = dns_cache_lock
+                        .liveness
+                        .iter()
+                        .filter_map(|(domain, ctime)| match now.duration_since(*ctime) {
+                            Ok(elapsed) if elapsed > duration => Some(domain.clone()),
+                            _ => None,
+                        })
+                        .collect();
+
+                    for domain in expired {
+                        dns_cache_lock.remove(&domain);
                     }
                 }
                 std::thread::sleep(check_time);
@@ -108,33 +116,34 @@ impl DnsResolver {
             return Some(addr);
         }
 
-        if let Some((domain, port)) = socket_addr.split_once(':') {
-            let port: u16 = port.parse().ok()?;
+        let (domain, port) = socket_addr.split_once(':')?;
+        let port: u16 = port.parse().ok()?;
 
-            // 1. get the cache
-            let mut cache = self.cache.lock().ok()?;
+        // 1) cache
+        if let Ok(cache) = self.cache.lock() {
             if let Some(ip) = cache.get(domain) {
-                let socket_addr = SocketAddr::new(*ip, port);
-                return Some(socket_addr);
-            };
-
-            // 2. get the local
-            if let Some(ip) = self.__local_resolve(domain) {
-                let _ = cache.insert(Host::new(&ip.to_string(), domain).ok()?);
-                let socket_addr = SocketAddr::new(*ip, port);
-                return Some(socket_addr);
+                return Some(SocketAddr::new(*ip, port));
             }
+        }
 
-            // 3. get the remote
-            if let Some(ips) = self.__remote_solve(domain).await {
-                // TODO: need to re-design the Host which domain has multi-ips
-                let _ = cache.insert(Host::new(&ips[0].to_string(), domain).ok()?);
-                let socket_addr = SocketAddr::new(ips[0], port);
-                return Some(socket_addr);
+        // 2) local hosts file
+        if let Some(ip) = self.__local_resolve(domain) {
+            if let (Ok(mut cache), Ok(host)) = (self.cache.lock(), Host::new(&ip.to_string(), domain))
+            {
+                let _ = cache.insert(host);
             }
-        };
+            return Some(SocketAddr::new(*ip, port));
+        }
+
+        // 3) remote DNS (do not hold cache locks across await)
+        let ips = self.__remote_solve(domain).await?;
+        let ip = ips.into_iter().next()?;
+        if let (Ok(mut cache), Ok(host)) = (self.cache.lock(), Host::new(&ip.to_string(), domain)) {
+            let _ = cache.insert(host);
+        }
+        return Some(SocketAddr::new(ip, port));
 
         // 4. fallback to None
-        None
+        // None
     }
 }

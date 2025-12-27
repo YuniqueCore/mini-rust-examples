@@ -3,6 +3,7 @@ mod status_line;
 
 use std::{io, str::FromStr};
 
+#[allow(unused_imports)]
 pub use status_code::*;
 pub use status_line::*;
 

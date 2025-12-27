@@ -18,7 +18,7 @@ pub struct DnsCache {
 impl Default for DnsCache {
     fn default() -> Self {
         Self {
-            duration: Duration::from_mins(1),
+            duration: Duration::from_secs(60),
             hosts: HashMap::new(),
             liveness: HashMap::new(),
         }

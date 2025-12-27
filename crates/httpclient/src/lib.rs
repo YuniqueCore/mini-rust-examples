@@ -21,15 +21,16 @@
 /// 终端日志：清晰展示“连接 → 发送请求 → 接收 + 解析响应”的过程。
 /// 可选：把解析结果以 JSON 打印，方便后续脚本检查
 use std::{
+    future::Future,
     io::{BufReader, BufWriter, Read, Write},
     net::{SocketAddr, TcpStream},
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
     thread,
 };
 
 use crate::{
-    cmd::{Args, HeadersArg},
-    request::ReqBuilder,
-    response::Resp,
+    cmd::{Args, HeadersArg}, dns::DnsResolver, request::ReqBuilder, response::Resp
 };
 // use smol::prelude::*;
 
@@ -46,8 +47,7 @@ use error::Result;
 pub fn run() -> Result<()> {
     let (args, remainder) = cmd::parse()?;
 
-    use std::str::FromStr;
-    let target_socket = SocketAddr::from_str(&args.target_addr.clone().unwrap())?;
+    let target_socket = lookup_target(&args)?;
 
     let (buf_tx, buf_rx) = connect(target_socket)?;
 
@@ -73,6 +73,50 @@ pub fn run() -> Result<()> {
         .expect("should be successfully read the data");
 
     Ok(())
+}
+
+fn lookup_target(args: &Args) -> Result<SocketAddr> {
+    use std::str::FromStr;
+    let target_addr = args.target_addr.clone().unwrap();
+    let mut target_socket = SocketAddr::from_str(&target_addr).map_err(error::Error::from_addr_parse_error);
+    if target_socket.is_err(){
+        let dns_client = DnsResolver::new();
+        let socket_addr = block_on(dns_client.resolve(&target_addr));
+        target_socket = socket_addr.ok_or(error::Error::addr(format!(
+            "failed to resolve target addr: {target_addr}"
+        )));
+    }
+
+   Ok(target_socket?)
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    struct ThreadWake {
+        thread: thread::Thread,
+    }
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.thread.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.thread.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(ThreadWake {
+        thread: thread::current(),
+    }));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
+    }
 }
 
 fn collect(args: Args, remainder: Vec<String>) -> (HeadersArg, String) {

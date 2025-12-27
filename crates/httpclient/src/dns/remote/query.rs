@@ -237,7 +237,7 @@ mod tests {
         future::Future,
         pin::Pin,
         sync::Arc,
-        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+        task::{Context, Poll, Wake, Waker},
         thread,
         time::Duration,
     };
@@ -247,11 +247,26 @@ mod tests {
         error::Result,
     };
 
-    fn block_on<F: Future>(mut future: F) -> F::Output {
-        let waker = thread_waker(thread::current());
+    fn block_on<F: Future>(future: F) -> F::Output {
+        struct ThreadWake {
+            thread: thread::Thread,
+        }
+
+        impl Wake for ThreadWake {
+            fn wake(self: Arc<Self>) {
+                self.thread.unpark();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.thread.unpark();
+            }
+        }
+
+        let waker = Waker::from(Arc::new(ThreadWake {
+            thread: thread::current(),
+        }));
         let mut cx = Context::from_waker(&waker);
-        // SAFETY: the future is pinned on the stack for the duration of this function.
-        let mut future = unsafe { Pin::new_unchecked(&mut future) };
+        let mut future = Box::pin(future);
 
         loop {
             match future.as_mut().poll(&mut cx) {
@@ -259,45 +274,6 @@ mod tests {
                 Poll::Pending => thread::park(),
             }
         }
-    }
-
-    fn thread_waker(thread: thread::Thread) -> Waker {
-        let thread = Arc::new(thread);
-        // SAFETY: raw waker functions correctly manage the Arc lifetime.
-        unsafe { Waker::from_raw(raw_waker(thread)) }
-    }
-
-    fn raw_waker(thread: Arc<thread::Thread>) -> RawWaker {
-        RawWaker::new(Arc::into_raw(thread) as *const (), &RAW_WAKER_VTABLE)
-    }
-
-    static RAW_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-        raw_waker_clone,
-        raw_waker_wake,
-        raw_waker_wake_by_ref,
-        raw_waker_drop,
-    );
-
-    unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
-        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
-        let cloned = thread.clone();
-        std::mem::forget(thread);
-        RawWaker::new(Arc::into_raw(cloned) as *const (), &RAW_WAKER_VTABLE)
-    }
-
-    unsafe fn raw_waker_wake(data: *const ()) {
-        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
-        thread.unpark();
-    }
-
-    unsafe fn raw_waker_wake_by_ref(data: *const ()) {
-        let thread = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
-        thread.unpark();
-        std::mem::forget(thread);
-    }
-
-    unsafe fn raw_waker_drop(data: *const ()) {
-        let _ = Arc::<thread::Thread>::from_raw(data as *const thread::Thread);
     }
 
     struct Join2<F1, F2>

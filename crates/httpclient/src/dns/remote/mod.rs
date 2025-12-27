@@ -1,6 +1,5 @@
 use crate::dns::remote::query::DnsQueryClient;
 use crate::dns::remote::query::QType;
-use crate::error::Result;
 
 use std::net::IpAddr;
 use std::net::SocketAddr;

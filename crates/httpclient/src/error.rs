@@ -34,6 +34,9 @@ impl core::error::Error for Error {}
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "[Error]: {self}")
+        match self {
+            Error::IO(msg) => write!(f, "[IO Error] {msg}"),
+            Error::Net(msg) => write!(f, "[Net Error] {msg}"),
+        }
     }
 }
