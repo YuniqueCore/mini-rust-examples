@@ -124,7 +124,7 @@ impl ReqBuilder {
     }
     pub fn req_method(mut self, method: ReqMethod, route: &str) -> Self {
         self.req = Self::__build_request_method(method, route, HTTP_VERSION);
-        self.req.push('\n');
+        self.req.push_str("\r\n");
         self
     }
 
@@ -137,17 +137,18 @@ impl ReqBuilder {
             let h = h.as_ref();
             if !h.is_empty() {
                 self.req.push_str(h);
-                self.req.push('\n');
+                self.req.push_str("\r\n");
             }
         }
-        self.req.push('\n');
+        self.req.push_str("\r\n");
 
         self
     }
 
     pub fn data(mut self, data: &str) -> Self {
-        self.req.push_str(data);
-        self.req.push('\n');
+        if !data.is_empty() {
+            self.req.push_str(data);
+        }
 
         self
     }

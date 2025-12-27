@@ -1,5 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
+    net::ToSocketAddrs,
     str::FromStr,
     sync::{Arc, Mutex},
     thread::JoinHandle,
@@ -133,6 +134,18 @@ impl DnsResolver {
                 let _ = cache.insert(host);
             }
             return Some(SocketAddr::new(*ip, port));
+        }
+
+        // 3) system resolver (uses OS DNS config; often more reliable than hardcoded public DNS)
+        if let Ok(mut addrs) = (domain, port).to_socket_addrs() {
+            if let Some(addr) = addrs.next() {
+                if let (Ok(mut cache), Ok(host)) =
+                    (self.cache.lock(), Host::new(&addr.ip().to_string(), domain))
+                {
+                    let _ = cache.insert(host);
+                }
+                return Some(addr);
+            }
         }
 
         // 3) remote DNS (do not hold cache locks across await)

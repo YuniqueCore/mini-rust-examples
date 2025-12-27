@@ -47,11 +47,29 @@ use error::Result;
 pub fn run() -> Result<()> {
     let (args, remainder) = cmd::parse()?;
 
-    let target_socket = lookup_target(&args)?;
+    let target_addr = args.target_addr.clone().unwrap();
+    let (target_host, target_port) = parse_target_host_port(&target_addr)?;
+    if target_port == 443 {
+        return Err(error::Error::addr(
+            "HTTPS/TLS is required for port 443, but this std-only client only supports plain HTTP over TCP. Use port 80 or add a TLS implementation.",
+        )
+        .into());
+    }
+
+    let target_socket = lookup_target(&target_addr)?;
+
+    dbg!(&target_socket);
 
     let (buf_tx, buf_rx) = connect(target_socket)?;
 
-    let (headers, data) = collect(args, remainder);
+    let (mut headers, data) = collect(args, remainder);
+    ensure_header(&mut headers, "Host", &target_host);
+    ensure_header(&mut headers, "Connection", "close");
+    ensure_header(&mut headers, "User-Agent", "mini-rust-examples/httpclient");
+    if !data.is_empty() {
+        ensure_header(&mut headers, "Content-Length", &data.as_bytes().len().to_string());
+        ensure_header(&mut headers, "Content-Type", "text/plain; charset=utf-8");
+    }
 
     let req_content = ReqBuilder::new()
         .get("/abc")
@@ -75,9 +93,33 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn lookup_target(args: &Args) -> Result<SocketAddr> {
+fn parse_target_host_port(target_addr: &str) -> Result<(String, u16)> {
+    let (host, port_str) = target_addr.split_once(':').ok_or_else(|| {
+        error::Error::addr(format!("invalid target addr (expected host:port): {target_addr}"))
+    })?;
+    let port: u16 = port_str.parse().map_err(|_| {
+        error::Error::addr(format!("invalid target port (expected u16): {port_str}"))
+    })?;
+    Ok((host.to_string(), port))
+}
+
+fn has_header(headers: &HeadersArg, name: &str) -> bool {
+    let needle = format!("{}:", name.to_ascii_lowercase());
+    headers
+        .iter()
+        .map(|h| h.trim_start().to_ascii_lowercase())
+        .any(|h| h.starts_with(&needle))
+}
+
+fn ensure_header(headers: &mut HeadersArg, name: &str, value: &str) {
+    if has_header(headers, name) {
+        return;
+    }
+    headers.push(format!("{name}: {value}"));
+}
+
+fn lookup_target(target_addr: &str) -> Result<SocketAddr> {
     use std::str::FromStr;
-    let target_addr = args.target_addr.clone().unwrap();
     let mut target_socket = SocketAddr::from_str(&target_addr).map_err(error::Error::from_addr_parse_error);
     if target_socket.is_err(){
         let dns_client = DnsResolver::new();
@@ -153,6 +195,12 @@ fn recv(buf_rx: BufReader<std::net::TcpStream>) -> thread::JoinHandle<()> {
             let res = buf_rx.read(&mut buf);
             match res {
                 Ok(0) => {
+                    if response_vec.is_empty() {
+                        eprintln!(
+                            "Error: empty response (server closed connection or protocol mismatch)"
+                        );
+                        break;
+                    }
                     let full_resp_str = String::from_utf8_lossy(&response_vec);
                     let resp = Resp::default().resp(&full_resp_str).parse();
                     match resp {

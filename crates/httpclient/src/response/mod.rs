@@ -24,11 +24,17 @@ impl Resp {
     }
 
     pub fn parse(mut self) -> Result<Self, io::Error> {
-        let mut lines = self.raw_resp.split('\n');
+        let mut lines = self.raw_resp.lines();
         let status_line = lines.next().ok_or(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Error: invalid data, no status line found"),
         ))?;
+        if status_line.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Error: empty response (server closed connection or protocol mismatch)".to_string(),
+            ));
+        }
         self.status = StatusLine::from_str(status_line)?;
 
         let mut headers = Vec::new();
