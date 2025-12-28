@@ -684,6 +684,7 @@ dependencies = [
  "anyhow",
  "ctrlc2",
  "mea",
+ "pastey",
  "sarge",
  "smol",
 ]

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Header{
     key:String,
     value:String
@@ -19,5 +19,12 @@ impl FromStr for Header {
             key:splits[0].to_owned(),
             value:splits[0].to_owned(),
         })
+    }
+}
+
+
+impl ToString for Header {
+    fn to_string(&self) -> String {
+        format!("{}: {}", self.key, self.value)
     }
 }

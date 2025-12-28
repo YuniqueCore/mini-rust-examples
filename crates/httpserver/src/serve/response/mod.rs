@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::serve::response::{header::Header, status_line::StatusLine};
+use crate::serve::{Method, response::{header::Header, status_line::StatusLine}};
 
 mod content_type;
 mod header;
@@ -22,7 +22,59 @@ pub struct Response {
     data: Option<String>,
 }
 
+impl Default for Response {
+    fn default() -> Self {
+        Self { 
+            status_line: StatusLine::new(
+                Method::GET.to_string(), 
+                String::from("/"), 
+                HTTP_VESION.into()
+            ), 
+            ..Default::default()
+        }
+    }
+}
+
 impl Response {
+    pub fn new() -> Self { 
+        Self::default()
+    }
+
+    pub fn with_status_line(mut self,status_line:StatusLine) ->Self{
+        self.status_line = status_line;
+        self
+    }
+
+    pub fn with_headers(mut self, headers:&[Header]) ->Self{
+        self.headers = headers.to_vec();
+        self
+    }
+
+
+    pub fn with_data(mut self, data:&str) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    pub fn  build(&self) -> Result<String> {
+        let mut response = String::new();
+        
+        response.push_str(&self.status_line.to_string());
+        for h in self.headers.iter() {
+            response.push_str(&h.to_string());
+        }
+
+        if let Some(d) = &self.data {
+            response.push_str(&d);
+        }
+
+        Ok(response)
+    }
+
+    pub fn to_string(&self) -> Result<String> {
+        self.build()
+    }
+
     pub fn parse(response: &str) -> Result<Self> {
         let (char_idx, _line_idx) = find_empty_line_index(response);
         let (meta, data) = response.split_at(char_idx);
@@ -51,6 +103,15 @@ impl Response {
             headers,
             data,
         })
+    }
+}
+
+
+impl FromStr for Response {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
