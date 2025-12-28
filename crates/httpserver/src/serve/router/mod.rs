@@ -1,5 +1,5 @@
-mod handler;
 mod path;
+mod handler;
 
 pub use path::*;
 pub use handler::*;
