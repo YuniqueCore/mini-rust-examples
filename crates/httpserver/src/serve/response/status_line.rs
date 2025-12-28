@@ -1,22 +1,24 @@
-use std::str::FromStr;
 use anyhow::Result;
-
-use crate::serve::Method;
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct StatusLine {
-    method: Method,
-    route_path: String,
-    protocl: String,
+    version: String,
+    status: u16,
+    reason: String,
 }
 
 impl StatusLine {
-    pub fn new<S: Into<String>>(method: S, route_path: S, protocl: S) -> Self {
+    pub fn new<S: Into<String>>(version: S, status: u16, reason: S) -> Self {
         Self {
-            method: Method::from_str(&method.into()).unwrap_or(Method::GET),
-            route_path: route_path.into(),
-            protocl: protocl.into(),
+            version: version.into(),
+            status,
+            reason: reason.into(),
         }
+    }
+
+    pub fn split(&self) -> (String, u16, String) {
+        (self.version.clone(), self.status, self.reason.clone())
     }
 }
 
@@ -30,15 +32,15 @@ impl FromStr for StatusLine {
         }
 
         Ok(Self {
-            method: splits[0].into(),
-            route_path: splits[1].to_owned(),
-            protocl: splits[2].to_owned(),
+            version: splits[0].into(),
+            status: splits[1].parse()?,
+            reason: splits[2].to_owned(),
         })
     }
 }
 
 impl ToString for StatusLine {
     fn to_string(&self) -> String {
-        format!("{} {} {}", self.method, self.route_path, self.protocl)
+        format!("{} {} {}", self.version, self.status, self.reason)
     }
 }

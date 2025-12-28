@@ -4,6 +4,8 @@ mod handler;
 pub use path::*;
 pub use handler::*;
 
+use crate::serve::Response;
+
 
 #[derive(Debug)]
 pub enum Route {
@@ -12,11 +14,11 @@ pub enum Route {
     UNKNOWN(RoutePath),
 }
 
+type Handler = fn(&Request) -> Response;
 
 #[derive(Debug)]
-pub struct Router{
-    routes:Vec<Route>,
-    methods:Vec<String>
+pub struct Router {
+    routes: std::collections::HashMap<String, std::collections::HashMap<Method, Handler>>,
 }
 
 

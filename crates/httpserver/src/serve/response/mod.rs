@@ -7,65 +7,66 @@ use std::{
 
 use anyhow::Result;
 
-use crate::serve::{Method, response::{header::Header, status_line::StatusLine}};
+use crate::serve::{Header, response::status_line::StatusLine};
 
-mod content_type;
-mod header;
+mod request_line;
 mod status_line;
 
 const HTTP_VESION: &str = "http/1.1";
 
 #[derive(Debug)]
 pub struct Response {
-    status_line: StatusLine,
-    headers: Vec<Header>,
-    data: Option<String>,
+    pub version: String, // "HTTP/1.1"
+    pub status: u16,     // 200, 404...
+    pub reason: String,  // "OK"
+    pub headers: Vec<Header>,
+    pub body: Option<Vec<u8>>,
 }
 
 impl Default for Response {
     fn default() -> Self {
-        Self { 
-            status_line: StatusLine::new(
-                Method::GET.to_string(), 
-                String::from("/"), 
-                HTTP_VESION.into()
-            ), 
+        Self {
+            version: HTTP_VESION.into(),
+            status: 200,
+            reason: "OK".into(),
             ..Default::default()
         }
     }
 }
 
 impl Response {
-    pub fn new() -> Self { 
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_status_line(mut self,status_line:StatusLine) ->Self{
-        self.status_line = status_line;
+    pub fn with_status_line(mut self, status_line: StatusLine) -> Self {
+        let (version, status, reason) = status_line.split();
+        self.version = version;
+        self.status = status;
+        self.reason = reason;
         self
     }
 
-    pub fn with_headers(mut self, headers:&[Header]) ->Self{
+    pub fn with_headers(mut self, headers: &[Header]) -> Self {
         self.headers = headers.to_vec();
         self
     }
 
-
-    pub fn with_data(mut self, data:&str) -> Self {
-        self.data = Some(data.into());
+    pub fn with_body(mut self, body: &str) -> Self {
+        self.body = Some(body.as_bytes().to_vec());
         self
     }
 
-    pub fn  build(&self) -> Result<String> {
+    pub fn build(&self) -> Result<String> {
         let mut response = String::new();
-        
-        response.push_str(&self.status_line.to_string());
+
+        response.push_str(&format!("{} {} {}", self.version, self.status, self.reason));
         for h in self.headers.iter() {
             response.push_str(&h.to_string());
         }
 
-        if let Some(d) = &self.data {
-            response.push_str(&d);
+        if let Some(d) = &self.body {
+            response.push_str(&String::from_utf8_lossy(&d));
         }
 
         Ok(response)
@@ -80,12 +81,12 @@ impl Response {
         let (meta, data) = response.split_at(char_idx);
 
         let mut meta_iter = meta.split("\r\n");
-        let status_line = StatusLine::from_str(
+        let (version,status,reason) = StatusLine::from_str(
             meta_iter
                 .next()
                 .ok_or(anyhow::anyhow!("failed to get the status line"))?
                 .trim(),
-        )?;
+        )?.split();
 
         let mut headers = vec![];
         for i in meta_iter {
@@ -96,16 +97,21 @@ impl Response {
         }
 
         let data = data.trim();
-        let data = if data.len()>0{ Some(data.to_owned()) } else{ None };
+        let body = if data.len() > 0 {
+            Some(data.as_bytes().to_vec())
+        } else {
+            None
+        };
 
-       Ok( Self {
-            status_line,
+        Ok(Self {
+            version,
+            status,
+            reason,
             headers,
-            data,
+            body,
         })
     }
 }
-
 
 impl FromStr for Response {
     type Err = anyhow::Error;
