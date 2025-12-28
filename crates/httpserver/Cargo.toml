@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+ctrlc2 ={version = "3.7.3",default-features = false, features = ["async","termination"]} 
 mea = "0.5.3"
 sarge ={ path = "/Users/unic/dev/projs/rs/sarge"}
+smol = "2.0.2"

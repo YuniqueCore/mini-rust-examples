@@ -1,7 +1,8 @@
-
-use std::{net::SocketAddr, ops::{Deref, DerefMut}, path::PathBuf, str::FromStr};
+use std::{net::SocketAddr, ops::{Deref,DerefMut}, path::PathBuf, str::FromStr};
 
 use sarge::{ArgumentType, prelude::*};
+
+use crate::impl_deref_mut;
 
 
 sarge! {
@@ -13,30 +14,11 @@ sarge! {
 
     /// the dir/file will be served
     #ok 's' pub serve: ServePath = ServePath::from_str(".").unwrap(),
+
+    /// help
+    #ok 'h' pub help: bool = false,
 }
 
-
-macro_rules! impl_deref_mut {
-    (
-        $struct:ident ( $target:ident )
-    ) => {
-        
-        impl Deref for $struct {
-            type Target = $target;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl DerefMut for $struct {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-
-    };
-}
 
 #[derive(Debug)]
 pub struct  BindAddr(SocketAddr);
