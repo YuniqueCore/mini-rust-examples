@@ -19,8 +19,8 @@ impl RequestLine {
         }
     }
 
-    pub fn split(&self) ->(String, String, String){
-        (self.method.to_string(),self.route_path.clone(),self.protocl.clone())
+    pub fn split(&self) ->(Method, String, String){
+        (self.method.clone(),self.route_path.clone(),self.protocl.clone())
     }
 }
 

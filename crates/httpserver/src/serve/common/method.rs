@@ -116,7 +116,7 @@ macro_rules! define_it {
 
 define_it!(
     /// nice to meet you
-    #[derive(Debug)]
+    #[derive(Debug,Clone)]
     pub enum Method {
         Other(String),
         GET,
