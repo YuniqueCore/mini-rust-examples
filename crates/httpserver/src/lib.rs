@@ -9,8 +9,6 @@ use crate::{
 mod app;
 mod cmd;
 mod serve;
-mod utils;
-
 pub async fn run() -> Result<()> {
     let ctrlc2 = app::ctrlc::init()?;
     let args = app::cmd::init()?;
