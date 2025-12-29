@@ -1,5 +1,5 @@
 use anyhow::{Ok, Result};
-use smol::net::TcpListener as SmolTcpListener;
+use smol::{future, net::TcpListener as SmolTcpListener};
 
 use crate::{cmd::Args, serve::StaticServeService};
 
@@ -11,11 +11,13 @@ mod utils;
 pub async fn run() ->Result<()>{
     let ctrlc2 = install_signal()?;
     let args = parse_cmd()?;
+    let termination = smol::spawn(async {
+        let _ = ctrlc2.await;
+        Ok(())
+    });
+    let service =  serve(args);
 
-    serve(args).await?;
-
-    ctrlc2.await.expect("should be shutdown gracefully");
-
+    future::race(service,termination).await?;
     Ok(())
 
 }
