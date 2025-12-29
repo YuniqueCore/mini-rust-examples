@@ -2,7 +2,10 @@ use std::str::FromStr;
 
 use anyhow::Result;
 
-use crate::{app::logger, cmd::{Args, LogLevel}};
+use crate::{
+    app::logger,
+    cmd::{Args, LogLevel},
+};
 pub fn init() -> Result<Args> {
     let (mut args, _reminder) = Args::parse()?;
     logger::init(

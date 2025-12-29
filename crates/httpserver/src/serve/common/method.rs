@@ -1,5 +1,3 @@
-use pastey::paste;
-
 #[macro_export]
 macro_rules! define_it {
     (
@@ -116,14 +114,14 @@ macro_rules! define_it {
 
 define_it!(
     /// nice to meet you
-    #[derive(Eq, Hash, PartialEq,Debug,Clone)]
+    #[derive(Eq, Hash, PartialEq, Debug, Clone)]
     pub enum Method {
         Other(String),
         GET,
+        HEAD,
         POST,
         PATCH,
         PUT,
         DETELE,
     }
 );
-

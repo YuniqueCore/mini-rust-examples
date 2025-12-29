@@ -1,21 +1,20 @@
-
-mod method;
-mod content_type;
 mod header;
+mod method;
 
 use std::io::{BufRead, Cursor};
 
-pub use method::*;
 pub use header::*;
-pub use content_type::*;
+pub use method::*;
 
 pub fn find_empty_line_index(content: &str) -> (usize, usize) {
     let mut cursor = Cursor::new(content);
     let (mut line_idx, mut char_idx) = (0, 0);
     let mut buf = String::new();
     while let Ok(len) = cursor.read_line(&mut buf) {
-        print!("{} -> {}", len, buf);
-        if len == 1 {
+        if len == 0 {
+            break;
+        }
+        if buf == "\n" || buf == "\r\n" {
             break;
         }
         char_idx += len;

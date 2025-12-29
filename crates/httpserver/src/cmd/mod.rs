@@ -1,9 +1,13 @@
-use std::{net::SocketAddr, ops::{Deref,DerefMut}, path::PathBuf, str::FromStr};
+use std::{
+    net::SocketAddr,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use sarge::{ArgumentType, prelude::*};
 
 use crate::impl_deref_mut;
-
 
 sarge! {
     #[derive(Debug)]
@@ -18,7 +22,7 @@ sarge! {
     /// log level: "" means no log, v - info, vv - debug, vvv - trace
     #ok 'v' pub log_level:LogLevel = LogLevel("info".into()),
 
-    /// log with color? 
+    /// log with color?
     #ok pub colored:bool = false,
 
     /// help
@@ -29,38 +33,41 @@ sarge! {
 pub struct LogLevel(String);
 
 impl FromStr for LogLevel {
-    type Err= core::convert::Infallible;
+    type Err = core::convert::Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-         Ok(Self(String::from_str(s)?))
+        Ok(Self(String::from_str(s)?))
     }
 }
 
 impl ArgumentType for LogLevel {
-    type Error=ArgParseError; 
+    type Error = ArgParseError;
     fn from_value(val: Option<&str>) -> sarge::ArgResult<Self> {
-        const VERBOSE_PAT:char ='v'; 
-        
-        if let Some(v)=val {
-            let level_str =match v.trim().to_ascii_lowercase().as_str(){
+        const VERBOSE_PAT: char = 'v';
+
+        if let Some(v) = val {
+            let level_str = match v.trim().to_ascii_lowercase().as_str() {
                 "off" => "off",
                 "err" | "error" => "error",
                 "warn" | "warning" => "warn",
                 "info" => "info",
                 "debug" => "debug",
                 "trace" => "trace",
-                s =>{
-                    let count = v.chars().filter(|c|c.eq_ignore_ascii_case(&VERBOSE_PAT)).count();
+                s => {
+                    let count = s
+                        .chars()
+                        .filter(|c| c.eq_ignore_ascii_case(&VERBOSE_PAT))
+                        .count();
                     match count {
                         0 => "off",
                         1 => "info",
                         2 => "debug",
                         3 => "trace",
-                        _ => "trace"
+                        _ => "trace",
                     }
                 }
             };
 
-            return  Ok(LogLevel(level_str.into())).into();
+            return Ok(LogLevel(level_str.into())).into();
         }
 
         Ok(LogLevel("info".into())).into()
@@ -69,46 +76,44 @@ impl ArgumentType for LogLevel {
 
 impl_deref_mut!(LogLevel(String));
 
-
 #[derive(Debug)]
-pub struct  BindAddr(SocketAddr);
+pub struct BindAddr(SocketAddr);
 
 impl ArgumentType for BindAddr {
-    type Error=ArgParseError;
+    type Error = ArgParseError;
 
     fn from_value(val: Option<&str>) -> sarge::ArgResult<Self> {
-       if let Some(v) = val {
-            let bind_addr  = SocketAddr::from_str(v).ok()?;
+        if let Some(v) = val {
+            let bind_addr = SocketAddr::from_str(v).ok()?;
             return Ok(BindAddr(bind_addr)).into();
-       }
+        }
         None
     }
 }
 
-impl FromStr for  BindAddr {
-    type Err=std::net::AddrParseError;
+impl FromStr for BindAddr {
+    type Err = std::net::AddrParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-         Ok(Self(SocketAddr::from_str(s)?))
+        Ok(Self(SocketAddr::from_str(s)?))
     }
 }
 
 impl_deref_mut!(BindAddr(SocketAddr));
 
-
 #[derive(Debug)]
-pub struct  ServePath(PathBuf);
+pub struct ServePath(PathBuf);
 
 impl ArgumentType for ServePath {
-    type Error=ArgParseError;
+    type Error = ArgParseError;
 
     fn from_value(val: Option<&str>) -> sarge::ArgResult<Self> {
-       if let Some(v) = val {
-            let path  =PathBuf::from_str(v).unwrap();
-            if !path.exists(){
-                return  None;
+        if let Some(v) = val {
+            let path = PathBuf::from_str(v).unwrap();
+            if !path.exists() {
+                return None;
             }
             return Ok(ServePath(path)).into();
-       }
+        }
         None
     }
 }

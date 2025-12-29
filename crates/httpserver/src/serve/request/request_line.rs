@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use anyhow::Result;
+use std::str::FromStr;
 
 use crate::serve::Method;
 
@@ -19,8 +19,12 @@ impl RequestLine {
         }
     }
 
-    pub fn split(&self) ->(Method, String, String){
-        (self.method.clone(),self.route_path.clone(),self.protocl.clone())
+    pub fn split(&self) -> (Method, String, String) {
+        (
+            self.method.clone(),
+            self.route_path.clone(),
+            self.protocl.clone(),
+        )
     }
 }
 

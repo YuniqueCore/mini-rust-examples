@@ -16,6 +16,5 @@ macro_rules! impl_deref_mut {
                 &mut self.0
             }
         }
-
     };
 }

@@ -1,30 +1,42 @@
 use std::str::FromStr;
 
-#[derive(Debug,Clone)]
-pub struct Header{
-    key:String,
-    value:String
+#[derive(Debug, Clone)]
+pub struct Header {
+    pub key: String,
+    pub value: String,
+}
+
+impl Header {
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    pub fn key_eq_ignore_ascii_case(&self, other: &str) -> bool {
+        self.key.eq_ignore_ascii_case(other)
+    }
 }
 
 impl FromStr for Header {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let splits:Vec<&str> = s.trim().splitn(2, ':').collect();
-        if splits.len() != 2{
-            return Err(anyhow::anyhow!("failed to parse the header line: {}",s))
-        }
+        let trimmed = s.trim();
+        let (key, value) = trimmed
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("failed to parse the header line: {}", s))?;
 
-        Ok(Self { 
-            key:splits[0].to_owned(),
-            value:splits[0].to_owned(),
+        Ok(Self {
+            key: key.trim().to_owned(),
+            value: value.trim().to_owned(),
         })
     }
 }
 
-
 impl ToString for Header {
     fn to_string(&self) -> String {
-        format!("{}: {}", self.key, self.value)
+        format!("{}: {}\r\n", self.key, self.value)
     }
 }

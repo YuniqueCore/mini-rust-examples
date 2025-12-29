@@ -1,11 +1,10 @@
 use anyhow::Result;
 use smol::{future, net::TcpListener as SmolTcpListener};
 
-use crate::{cmd::{Args}, serve::StaticServeService
-};
+use crate::{cmd::Args, serve::StaticServeService};
 
-mod cmd;
 mod app;
+mod cmd;
 mod serve;
 mod utils;
 
@@ -27,9 +26,8 @@ async fn serve(args: Args) -> Result<()> {
     let serve_path = args.serve.expect("should have a valid path for serving");
     let bind_addr = args.bind.expect("should have a valid bind addr");
     let tcp_listener = SmolTcpListener::bind(*bind_addr).await?;
+    log::info!("Server listen on: {}", tcp_listener.local_addr()?);
     StaticServeService::new(&serve_path)
         .serve(tcp_listener)
         .await
 }
-
-
