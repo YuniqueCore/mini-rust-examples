@@ -68,6 +68,11 @@ impl Response {
         Self::default()
     }
 
+    pub fn without_body(mut self) -> Self {
+        self.body = None;
+        self
+    }
+
     pub fn with_status(mut self, status: u16, reason: impl Into<String>) -> Self {
         self.status = status;
         self.reason = reason.into();
@@ -166,6 +171,24 @@ impl Response {
             .with_status(status, reason)
             .with_header("Content-Type", "text/html; charset=utf-8")
             .with_body_bytes(html.into_bytes())
+    }
+
+    pub fn redirect_301(location: &str) -> Self {
+        let body = format!(
+            "<p>Moved Permanently: <a href=\"{location}\">{location}</a></p>",
+            location = location
+        );
+        Response::new()
+            .with_status(301, "Moved Permanently")
+            .with_header("Location", location)
+            .with_header("Content-Type", "text/html; charset=utf-8")
+            .with_body_bytes(
+                format!(
+                    "<!doctype html><html><head><meta charset=\"utf-8\"><title>301 Moved Permanently</title></head><body>{body}</body></html>",
+                    body = body
+                )
+                .into_bytes(),
+            )
     }
 
     pub fn parse(response: &str) -> Result<Self> {
