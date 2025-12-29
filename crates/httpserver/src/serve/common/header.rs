@@ -35,8 +35,8 @@ impl FromStr for Header {
     }
 }
 
-impl ToString for Header {
-    fn to_string(&self) -> String {
-        format!("{}: {}\r\n", self.key, self.value)
+impl std::fmt::Display for Header {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}\r\n", self.key, self.value)
     }
 }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use smol::net::{TcpListener as SmolTcpListener, TcpStream as SmolTcpStream};
+use smol::net::TcpListener as SmolTcpListener;
 
 use crate::{
     cmd::Args,
@@ -20,6 +20,7 @@ pub async fn run() -> Result<()> {
 async fn serve(args: Args, ctrlc2: ctrlc2::AsyncCtrlC) -> Result<()> {
     let serve_path = args.serve.expect("should have a valid path for serving");
     let bind_addr = args.bind.expect("should have a valid bind addr");
+    let types = args.types.unwrap_or_default().into();
     let tcp_listener = SmolTcpListener::bind(*bind_addr).await?;
     let local_addr = tcp_listener.local_addr()?;
     log::info!("Server listen on: http://{}", local_addr);
@@ -29,13 +30,11 @@ async fn serve(args: Args, ctrlc2: ctrlc2::AsyncCtrlC) -> Result<()> {
     smol::spawn(async move {
         let _ = ctrlc2.await;
         log::info!("Shutdown requested (Ctrl+C). Waiting for in-flight requests...");
-        shutdown_for_signal.initiate().await;
-        // Wake the accept() loop so it can observe the shutdown flag.
-        let _ = SmolTcpStream::connect(local_addr).await;
+        shutdown_for_signal.initiate();
     })
     .detach();
 
-    StaticServeService::new(&serve_path)
+    StaticServeService::new(&serve_path, types)
         .serve(tcp_listener, shutdown)
         .await?;
     log::info!("Shutdown complete.");

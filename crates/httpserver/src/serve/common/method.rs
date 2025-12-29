@@ -22,30 +22,6 @@ macro_rules! define_it {
         }
 
         // -------------------------
-        // const items
-        // -------------------------
-        impl $name {
-            pub const ITEMS: &'static [Self] = &[
-                $(Self::$idents,)*
-            ];
-            pub const ITEMS_COUNT: usize = Self::ITEMS.len();
-        }
-
-        // -------------------------
-        // Method::get() / post() ...
-        // -------------------------
-        pastey::paste! {
-            impl $name {
-                $(
-                    #[inline]
-                    pub fn [<$idents:lower>]() -> Self {
-                        Self::$idents
-                    }
-                )*
-            }
-        }
-
-        // -------------------------
         // Display => to_string
         // -------------------------
         impl ::core::fmt::Display for $name {
@@ -115,6 +91,7 @@ macro_rules! define_it {
 define_it!(
     /// nice to meet you
     #[derive(Eq, Hash, PartialEq, Debug, Clone)]
+    #[allow(clippy::upper_case_acronyms)]
     pub enum Method {
         Other(String),
         GET,

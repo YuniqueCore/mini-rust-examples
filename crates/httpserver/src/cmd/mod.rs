@@ -8,6 +8,7 @@ use std::{
 use sarge::{ArgumentType, prelude::*};
 
 use crate::impl_deref_mut;
+use crate::serve::types::{TypeMappings, TypeSpecParseError};
 
 sarge! {
     #[derive(Debug)]
@@ -17,13 +18,16 @@ sarge! {
     #ok 'l' pub bind:BindAddr = BindAddr::from_str("127.0.0.1:8080").unwrap(),
 
     /// the dir/file will be served
-    #ok 's' pub serve: ServePath = ServePath::from_str(".").unwrap(),
+    #ok 's' pub serve: ServePath = ServePath::from_str("public").unwrap(),
 
     /// log level: "" means no log, v - info, vv - debug, vvv - trace
     #ok 'v' pub log_level:LogLevel = LogLevel("info".into()),
 
     /// log with color?
     #ok pub colored:bool = false,
+
+    /// Content-type & render mappings, e.g. -t "[rs|toml]=code;[md]=html"
+    #ok 't' pub types: TypeMappingsArg = TypeMappingsArg::default(),
 
     /// help
     #ok 'h' pub help: bool = false,
@@ -127,3 +131,23 @@ impl FromStr for ServePath {
 }
 
 impl_deref_mut!(ServePath(PathBuf));
+
+#[derive(Debug, Clone, Default)]
+pub struct TypeMappingsArg(TypeMappings);
+
+impl ArgumentType for TypeMappingsArg {
+    type Error = TypeSpecParseError;
+
+    fn from_value(val: Option<&str>) -> sarge::ArgResult<Self> {
+        match val {
+            None => Some(Ok(Self::default())),
+            Some(v) => Some(TypeMappings::parse_spec(v).map(TypeMappingsArg)),
+        }
+    }
+}
+
+impl From<TypeMappingsArg> for TypeMappings {
+    fn from(value: TypeMappingsArg) -> Self {
+        value.0
+    }
+}

@@ -11,14 +11,6 @@ pub struct RequestLine {
 }
 
 impl RequestLine {
-    pub fn new<S: Into<String>>(method: S, route_path: S, protocl: S) -> Self {
-        Self {
-            method: Method::from_str(&method.into()).unwrap_or(Method::GET),
-            route_path: route_path.into(),
-            protocl: protocl.into(),
-        }
-    }
-
     pub fn split(&self) -> (Method, String, String) {
         (
             self.method.clone(),
@@ -42,11 +34,5 @@ impl FromStr for RequestLine {
             route_path: splits[1].to_owned(),
             protocl: splits[2].to_owned(),
         })
-    }
-}
-
-impl ToString for RequestLine {
-    fn to_string(&self) -> String {
-        format!("{} {} {}", self.method, self.route_path, self.protocl)
     }
 }

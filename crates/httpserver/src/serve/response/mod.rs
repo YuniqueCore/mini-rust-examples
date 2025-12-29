@@ -1,46 +1,8 @@
 //! Response the http client request
 
-use std::str::FromStr;
-
-use anyhow::Result;
-
-use crate::serve::{Header, common, response::status_line::StatusLine};
-
-mod status_line;
+use crate::serve::Header;
 
 const HTTP_VERSION: &str = "HTTP/1.1";
-
-const INTERNAL_ERROR: &str = r#"HTTP/1.1 500 Internal Server Error
-Content-Type: text/html;
-Content-Length: 123
-
-<!doctype html>
-<html lang="en">
-<head>
-  <title>500 Internal Server Error</title>
-</head>
-<body>
-  <h1>Internal Server Error</h1>
-  <p>The server was unable to complete your request. Please try again later.</p>
-</body>
-</html>
-"#;
-
-const CLIENT_REQUEST_ERROR: &str = r#"HTTP/1.1 401 Request Error
-Content-Type: text/html;
-Content-Length: 123
-
-<!doctype html>
-<html lang="en">
-<head>
-  <title>401 Request error</title>
-</head>
-<body>
-  <h1>Client request Error</h1>
-  <p>The server was unable to complete your request. Please try again later.</p>
-</body>
-</html>
-"#;
 
 #[derive(Debug)]
 pub struct Response {
@@ -89,24 +51,6 @@ impl Response {
         self
     }
 
-    pub fn with_status_line(mut self, status_line: StatusLine) -> Self {
-        let (version, status, reason) = status_line.split();
-        self.version = version;
-        self.status = status;
-        self.reason = reason;
-        self
-    }
-
-    pub fn with_headers(mut self, headers: &[Header]) -> Self {
-        self.headers = headers.to_vec();
-        self
-    }
-
-    pub fn with_body(mut self, body: &str) -> Self {
-        self.body = Some(body.as_bytes().to_vec());
-        self
-    }
-
     fn has_header(&self, key: &str) -> bool {
         self.headers.iter().any(|h| h.key_eq_ignore_ascii_case(key))
     }
@@ -138,22 +82,6 @@ impl Response {
             out.extend_from_slice(body);
         }
         out
-    }
-
-    pub fn build(&self) -> Result<String> {
-        Ok(String::from_utf8_lossy(&self.to_bytes()).to_string())
-    }
-
-    pub fn to_string(&self) -> String {
-        self.build().unwrap_or(String::from(INTERNAL_ERROR))
-    }
-
-    pub fn internal_error() -> &'static [u8] {
-        INTERNAL_ERROR.as_bytes()
-    }
-
-    pub fn error_request() -> &'static [u8] {
-        CLIENT_REQUEST_ERROR.as_bytes()
     }
 
     pub fn plain_text(status: u16, reason: &str, body: &str) -> Self {
@@ -189,50 +117,5 @@ impl Response {
                 )
                 .into_bytes(),
             )
-    }
-
-    pub fn parse(response: &str) -> Result<Self> {
-        let (char_idx, _line_idx) = common::find_empty_line_index(response);
-        let (meta, data) = response.split_at(char_idx);
-
-        let mut meta_iter = meta.split("\r\n");
-        let (version, status, reason) = StatusLine::from_str(
-            meta_iter
-                .next()
-                .ok_or(anyhow::anyhow!("failed to get the status line"))?
-                .trim(),
-        )?
-        .split();
-
-        let mut headers = vec![];
-        for i in meta_iter {
-            if i.contains(':') {
-                let header = i.trim();
-                headers.push(Header::from_str(header)?);
-            }
-        }
-
-        let data = data.trim();
-        let body = if data.len() > 0 {
-            Some(data.as_bytes().to_vec())
-        } else {
-            None
-        };
-
-        Ok(Self {
-            version,
-            status,
-            reason,
-            headers,
-            body,
-        })
-    }
-}
-
-impl FromStr for Response {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Self::parse(s)
     }
 }
