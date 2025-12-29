@@ -710,6 +710,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "httproxy"
+version = "0.1.0"
+
+[[package]]
 name = "httpserver"
 version = "0.1.0"
 dependencies = [
