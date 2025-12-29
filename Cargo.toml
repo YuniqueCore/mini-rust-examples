@@ -39,3 +39,22 @@ sarge ={ path = "/Users/unic/dev/projs/rs/sarge"}
 smol = "2"
 
 httparse ={ version = "1"}
+
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+[profile.minirelease]
+inherits = "release"
+opt-level         = "z"
+lto               = "fat"
+codegen-units     = 1
+panic             = "abort"
+strip             = "symbols"
+overflow-checks   = false
+debug-assertions  = false
+incremental       = false
