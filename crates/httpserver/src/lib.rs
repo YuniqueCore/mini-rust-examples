@@ -1,6 +1,7 @@
 use anyhow::{Ok, Result};
+use smol::net::TcpListener as SmolTcpListener;
 
-use crate::cmd::Args;
+use crate::{cmd::Args, serve::StaticServeService};
 
 mod cmd;
 mod serve;
@@ -10,7 +11,6 @@ mod utils;
 pub async fn run() ->Result<()>{
     let ctrlc2 = install_signal()?;
     let args = parse_cmd()?;
-
 
     serve(args).await?;
 
@@ -22,8 +22,10 @@ pub async fn run() ->Result<()>{
 
 
 async fn serve(args:Args)->Result<()>{
-
-    Ok(())
+    let serve_path = args.serve.expect("should have a valid path for serving");
+    let bind_addr = args.bind.expect("should have a valid bind addr");
+    let tcp_listener = SmolTcpListener::bind(*bind_addr).await?;
+    StaticServeService::new(&serve_path).serve(tcp_listener).await
 }
 
 fn install_signal() -> Result<ctrlc2::AsyncCtrlC>{
