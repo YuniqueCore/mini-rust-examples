@@ -7,7 +7,8 @@ use crate::serve::{
     url,
 };
 
-const LARGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+// Treat files >= 1024MiB as "large": avoid loading into memory for HTML rendering.
+const LARGE_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct FileToSend {
@@ -19,6 +20,13 @@ pub(crate) struct FileToSend {
 #[derive(Debug)]
 pub(crate) struct UploadTarget {
     pub path: PathBuf,
+    pub kind: UploadKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UploadKind {
+    PutFile,
+    MultipartDir,
 }
 
 #[derive(Debug)]
@@ -96,11 +104,27 @@ pub(crate) fn route(base: &Path, req: &Request, types: &TypeMappings) -> RouteRe
                     Response::plain_text(404, "Not Found", "Not Found\n").without_body_if(is_head),
                 );
             }
-            RouteResult::Upload(UploadTarget { path: full })
+            RouteResult::Upload(UploadTarget {
+                path: full,
+                kind: UploadKind::PutFile,
+            })
+        }
+        Method::POST => {
+            if !request_path.ends_with('/') || !full.is_dir() {
+                return RouteResult::Response(
+                    Response::plain_text(405, "Method Not Allowed", "Method Not Allowed\n")
+                        .with_header("Allow", "GET, HEAD, PUT, POST")
+                        .without_body_if(is_head),
+                );
+            }
+            RouteResult::Upload(UploadTarget {
+                path: full,
+                kind: UploadKind::MultipartDir,
+            })
         }
         _ => RouteResult::Response(
             Response::plain_text(405, "Method Not Allowed", "Method Not Allowed\n")
-                .with_header("Allow", "GET, HEAD, PUT")
+                .with_header("Allow", "GET, HEAD, PUT, POST")
                 .without_body_if(is_head),
         ),
     }
@@ -238,7 +262,7 @@ fn directory_listing_response(dir: &Path, raw_url_path: &str, decoded_url_path: 
     body.push_str(&format!("<h1>{}</h1>", title));
     body.push_str(&format!(
         "<div class=\"upload\" id=\"upload\" data-base=\"{base}\">\
-<div><strong>Upload</strong> (PUT)</div>\
+<div><strong>Upload</strong> (multipart/form-data)</div>\
 <div style=\"margin-top:8px\">\
 <input type=\"file\" id=\"upload_files\" multiple />\
 <button type=\"button\" id=\"upload_btn\">Upload</button>\
@@ -257,12 +281,13 @@ btn.addEventListener('click', async () => {{\
   if(files.length===0){{status.textContent='No files selected.';return;}}\
   btn.disabled=true; \
   try {{\
+    const form = new FormData(); \
     for(const f of files){{\
       status.textContent = 'Uploading ' + f.name + ' (' + f.size + ' bytes)...'; \
-      const url = base + encodeURIComponent(f.name); \
-      const resp = await fetch(url, {{method:'PUT', body:f}}); \
-      if(!resp.ok){{throw new Error('Upload failed: ' + resp.status + ' ' + resp.statusText);}}\
+      form.append('file', f, f.name); \
     }}\
+    const resp = await fetch(base, {{method:'POST', body:form}}); \
+      if(!resp.ok){{throw new Error('Upload failed: ' + resp.status + ' ' + resp.statusText);}}\
     status.textContent='Upload complete. Refreshing...'; \
     setTimeout(() => location.reload(), 300); \
   }} catch(e) {{\

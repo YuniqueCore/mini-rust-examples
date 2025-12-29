@@ -8,9 +8,16 @@ anyhow.workspace = true
 chrono.workspace = true
 ctrlc2.workspace = true
 fern.workspace = true
+futures.workspace = true
+httparse.workspace = true
 log.workspace = true
 mea.workspace = true
-minimime = "1"
 pastey.workspace = true
 sarge.workspace = true
 smol.workspace = true
+
+bytes = "1"
+cmark-syntax = "0.6"
+http-range = "0.1"
+minimime = "1"
+multer = "3"

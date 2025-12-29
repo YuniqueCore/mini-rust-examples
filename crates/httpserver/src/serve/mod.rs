@@ -5,20 +5,26 @@ use std::{
 };
 
 use anyhow::Result;
+use futures::FutureExt;
 use smol::future;
 use smol::net::TcpListener as SmolTcpListener;
 
-pub(crate) mod auth;
 mod common;
-mod connection;
-mod render;
+mod fs;
+mod http;
 mod request;
 mod response;
-mod shutdown;
-mod static_files;
-mod url;
+mod runtime;
+mod ui;
+mod util;
 
-pub mod types;
+pub(crate) use fs::static_files;
+pub(crate) use http::{auth, connection};
+pub(crate) use runtime::shutdown;
+pub(crate) use ui::render;
+pub use util::url;
+
+pub use fs::types;
 
 use auth::BasicAuth;
 pub use common::*;
@@ -76,17 +82,27 @@ impl StaticServeService {
             let request_count = self.request_count.clone();
             let shutdown = shutdown.clone();
             smol::spawn(async move {
-                let _inflight = shutdown.inflight_guard();
-                let ctx = connection::ConnectionContext {
-                    serve_path,
-                    types,
-                    auth,
-                    started_at,
-                    request_count,
-                    shutdown: shutdown.clone(),
+                let run = async move {
+                    let _inflight = shutdown.inflight_guard();
+                    let ctx = connection::ConnectionContext {
+                        serve_path,
+                        types,
+                        auth,
+                        started_at,
+                        request_count,
+                        shutdown: shutdown.clone(),
+                    };
+                    connection::handle(stream, peer, ctx).await
                 };
-                if let Err(e) = connection::handle(stream, peer, ctx).await {
-                    log::debug!("Connection {peer} closed with error: {e:#}");
+
+                match std::panic::AssertUnwindSafe(run).catch_unwind().await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        log::debug!("Connection {peer} closed with error: {e:#}");
+                    }
+                    Err(_) => {
+                        log::error!("Connection {peer} panicked.");
+                    }
                 }
             })
             .detach();

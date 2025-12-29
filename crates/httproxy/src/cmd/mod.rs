@@ -13,13 +13,13 @@ sarge! {
     pub Args,
 
     /// The bind addr for serving.
-    #ok 'l' pub bind: BindAddr = BindAddr::from_str("127.0.0.1:8081").unwrap(),
+    #ok 'l' @HTTPOXY_BIND pub bind: BindAddr = BindAddr::from_str("127.0.0.1:8081").unwrap(),
 
     /// the dir/file will be served
-    #ok 'r' pub reverse: BindAddr = BindAddr::from_str("127.0.0.1:8082").unwrap(),
+    #ok 'r' @HTTPOXY_REVERSE pub reverse: BindAddr = BindAddr::from_str("127.0.0.1:8082").unwrap(),
 
     /// log level: "" means no log, v - info, vv - debug, vvv - trace
-    #ok 'v' pub log_level:LogLevel = LogLevel("info".into()),
+    #ok 'v' @HTTPOXY_LOG_LEVEL pub log_level:LogLevel = LogLevel("info".into()),
 
     /// log with color?
     #ok pub colored:bool = false,
