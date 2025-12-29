@@ -21,6 +21,7 @@ async fn serve(args: Args, ctrlc2: ctrlc2::AsyncCtrlC) -> Result<()> {
     let serve_path = args.serve.expect("should have a valid path for serving");
     let bind_addr = args.bind.expect("should have a valid bind addr");
     let types = args.types.unwrap_or_default().into();
+    let auth = args.auth.unwrap_or_default().into();
     let tcp_listener = SmolTcpListener::bind(*bind_addr).await?;
     let local_addr = tcp_listener.local_addr()?;
     log::info!("Server listen on: http://{}", local_addr);
@@ -34,7 +35,7 @@ async fn serve(args: Args, ctrlc2: ctrlc2::AsyncCtrlC) -> Result<()> {
     })
     .detach();
 
-    StaticServeService::new(&serve_path, types)
+    StaticServeService::new(&serve_path, types, auth)
         .serve(tcp_listener, shutdown)
         .await?;
     log::info!("Shutdown complete.");

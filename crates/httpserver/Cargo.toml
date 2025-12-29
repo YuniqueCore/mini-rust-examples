@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-chrono = {version = "0.4",default-features = false, features = ["alloc","clock","now"]}
-ctrlc2 ={version = "3",default-features = false, features = ["async","termination"]} 
-fern = {version = "0.7",default-features = false,features = ["chrono","colored"]}
+anyhow.workspace = true
+chrono.workspace = true
+ctrlc2.workspace = true
+fern.workspace = true
 log.workspace = true
-mea = "0.5"
-pastey = "0.2"
-sarge ={ path = "/Users/unic/dev/projs/rs/sarge"}
-smol = "2"
+mea.workspace = true
+minimime = "1"
+pastey.workspace = true
+sarge.workspace = true
+smol.workspace = true

@@ -8,6 +8,7 @@ use anyhow::Result;
 use smol::future;
 use smol::net::TcpListener as SmolTcpListener;
 
+pub(crate) mod auth;
 mod common;
 mod connection;
 mod render;
@@ -19,6 +20,7 @@ mod url;
 
 pub mod types;
 
+use auth::BasicAuth;
 pub use common::*;
 pub use response::*;
 pub(crate) use shutdown::GracefulShutdown;
@@ -31,15 +33,17 @@ pub struct StaticServeService {
     started_at: Instant,
     request_count: Arc<AtomicU64>,
     types: TypeMappings,
+    auth: Option<BasicAuth>,
 }
 
 impl StaticServeService {
-    pub fn new(serve_path: &Path, types: TypeMappings) -> Self {
+    pub fn new(serve_path: &Path, types: TypeMappings, auth: Option<BasicAuth>) -> Self {
         Self {
             serve_path: serve_path.to_path_buf(),
             started_at: Instant::now(),
             request_count: Arc::new(AtomicU64::new(0)),
             types,
+            auth,
         }
     }
 
@@ -67,22 +71,21 @@ impl StaticServeService {
 
             let serve_path = self.serve_path.clone();
             let types = self.types.clone();
+            let auth = self.auth.clone();
             let started_at = self.started_at;
             let request_count = self.request_count.clone();
             let shutdown = shutdown.clone();
             smol::spawn(async move {
                 let _inflight = shutdown.inflight_guard();
-                if let Err(e) = connection::handle(
-                    stream,
-                    peer,
-                    &serve_path,
-                    &types,
+                let ctx = connection::ConnectionContext {
+                    serve_path,
+                    types,
+                    auth,
                     started_at,
                     request_count,
-                    shutdown.clone(),
-                )
-                .await
-                {
+                    shutdown: shutdown.clone(),
+                };
+                if let Err(e) = connection::handle(stream, peer, ctx).await {
                     log::debug!("Connection {peer} closed with error: {e:#}");
                 }
             })

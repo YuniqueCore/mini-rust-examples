@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::serve::{
     Method, Response, render,
@@ -7,22 +7,37 @@ use crate::serve::{
     url,
 };
 
-pub fn serve_static(base: &Path, req: &Request, types: &TypeMappings) -> Response {
-    match req.method {
-        Method::GET | Method::HEAD => {}
-        _ => {
-            return Response::plain_text(405, "Method Not Allowed", "Method Not Allowed\n")
-                .with_header("Allow", "GET, HEAD");
-        }
-    }
+const LARGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
+#[derive(Debug)]
+pub(crate) struct FileToSend {
+    pub path: PathBuf,
+    pub content_type: String,
+    pub len: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct UploadTarget {
+    pub path: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) enum RouteResult {
+    Response(Response),
+    SendFile(FileToSend),
+    Upload(UploadTarget),
+}
+
+pub(crate) fn route(base: &Path, req: &Request, types: &TypeMappings) -> RouteResult {
     let is_head = matches!(req.method, Method::HEAD);
     let raw_path = req.path.split('?').next().unwrap_or("/");
     let decoded_path = match url::percent_decode_path(raw_path) {
         Ok(p) => p,
         Err(_) => {
-            return Response::html(400, "Bad Request", "<h1>400 Bad Request</h1>")
-                .without_body_if(is_head);
+            return RouteResult::Response(
+                Response::html(400, "Bad Request", "<h1>400 Bad Request</h1>")
+                    .without_body_if(is_head),
+            );
         }
     };
 
@@ -36,59 +51,110 @@ pub fn serve_static(base: &Path, req: &Request, types: &TypeMappings) -> Respons
             std::path::Component::CurDir => {}
             std::path::Component::RootDir => {}
             std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
-                return Response::html(403, "Forbidden", "<h1>403 Forbidden</h1>")
-                    .without_body_if(is_head);
+                return RouteResult::Response(
+                    Response::html(403, "Forbidden", "<h1>403 Forbidden</h1>")
+                        .without_body_if(is_head),
+                );
             }
         }
     }
 
-    if full.is_dir() {
-        if request_path != "/" && !request_path.ends_with('/') {
-            let location = format!("{}/", raw_path);
-            return Response::redirect_301(&location).without_body_if(is_head);
+    match req.method {
+        Method::GET | Method::HEAD => {
+            if full.is_dir() {
+                if request_path != "/" && !request_path.ends_with('/') {
+                    let location = format!("{}/", raw_path);
+                    return RouteResult::Response(
+                        Response::redirect_301(&location).without_body_if(is_head),
+                    );
+                }
+
+                // Learning-friendly: always render a directory listing for directories.
+                return RouteResult::Response(
+                    directory_listing_response(&full, raw_path, request_path)
+                        .without_body_if(is_head),
+                );
+            }
+
+            serve_file(&full, req, types)
         }
-
-        // Learning-friendly: always render a directory listing for directories.
-        return directory_listing_response(&full, raw_path, request_path).without_body_if(is_head);
+        Method::PUT => {
+            if request_path.ends_with('/') {
+                return RouteResult::Response(
+                    Response::plain_text(400, "Bad Request", "Bad Request\n")
+                        .without_body_if(is_head),
+                );
+            }
+            if full.is_dir() {
+                return RouteResult::Response(
+                    Response::plain_text(400, "Bad Request", "Bad Request\n")
+                        .without_body_if(is_head),
+                );
+            }
+            if !full.parent().is_some_and(|p| p.is_dir()) {
+                return RouteResult::Response(
+                    Response::plain_text(404, "Not Found", "Not Found\n").without_body_if(is_head),
+                );
+            }
+            RouteResult::Upload(UploadTarget { path: full })
+        }
+        _ => RouteResult::Response(
+            Response::plain_text(405, "Method Not Allowed", "Method Not Allowed\n")
+                .with_header("Allow", "GET, HEAD, PUT")
+                .without_body_if(is_head),
+        ),
     }
-
-    serve_file(&full, req, types)
 }
 
-fn serve_file(path: &Path, req: &Request, types: &TypeMappings) -> Response {
+fn serve_file(path: &Path, req: &Request, types: &TypeMappings) -> RouteResult {
     let is_head = matches!(req.method, Method::HEAD);
 
-    let action = types.action_for_path(path);
-    match action {
-        Some(TypeAction::Raw { content_type }) => serve_file_raw(path, &content_type, is_head),
-        Some(TypeAction::Code) => serve_file_code(path, is_head),
-        Some(TypeAction::Markdown) => serve_file_markdown(path, is_head),
-        None => {
-            let content_type = guess_content_type_builtin(path);
-            serve_file_raw(path, content_type, is_head)
-        }
-    }
-}
-
-fn serve_file_raw(path: &Path, content_type: &str, is_head: bool) -> Response {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
         Err(_) => {
-            return Response::html(404, "Not Found", "<h1>404 Not Found</h1>")
-                .without_body_if(is_head);
+            return RouteResult::Response(
+                Response::html(404, "Not Found", "<h1>404 Not Found</h1>").without_body_if(is_head),
+            );
         }
     };
+    if !meta.is_file() {
+        return RouteResult::Response(
+            Response::html(404, "Not Found", "<h1>404 Not Found</h1>").without_body_if(is_head),
+        );
+    }
 
-    let resp = Response::new()
-        .with_status(200, "OK")
-        .with_header("Content-Type", content_type);
-
-    if is_head {
-        resp
-    } else {
-        resp.with_body_bytes(bytes)
+    let action = types.action_for_path(path);
+    if meta.len() >= LARGE_FILE_BYTES {
+        let content_type = match action {
+            Some(TypeAction::Raw { ref content_type }) => content_type.clone(),
+            _ => guess_content_type(path),
+        };
+        return RouteResult::SendFile(FileToSend {
+            path: path.to_path_buf(),
+            content_type,
+            len: meta.len(),
+        });
+    }
+    match action {
+        Some(TypeAction::Raw { content_type }) => RouteResult::SendFile(FileToSend {
+            path: path.to_path_buf(),
+            content_type,
+            len: meta.len(),
+        }),
+        Some(TypeAction::Code) => RouteResult::Response(serve_file_code(path, is_head)),
+        Some(TypeAction::Markdown) => RouteResult::Response(serve_file_markdown(path, is_head)),
+        None => {
+            let content_type = guess_content_type(path);
+            RouteResult::SendFile(FileToSend {
+                path: path.to_path_buf(),
+                content_type,
+                len: meta.len(),
+            })
+        }
     }
 }
+
+// Note: raw file responses are streamed from disk in `connection.rs`.
 
 fn serve_file_code(path: &Path, is_head: bool) -> Response {
     let bytes = match std::fs::read(path) {
@@ -168,8 +234,47 @@ fn directory_listing_response(dir: &Path, raw_url_path: &str, decoded_url_path: 
         url::html_escape(decoded_url_path)
     );
     let mut body = String::new();
-    body.push_str("<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif} table{border-collapse:collapse} td{padding:4px 10px} a{text-decoration:none} a:hover{text-decoration:underline} .muted{color:#666}</style>");
+    body.push_str("<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif} table{border-collapse:collapse} td{padding:4px 10px} a{text-decoration:none} a:hover{text-decoration:underline} .muted{color:#666} .upload{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa} .upload button{padding:6px 10px}</style>");
     body.push_str(&format!("<h1>{}</h1>", title));
+    body.push_str(&format!(
+        "<div class=\"upload\" id=\"upload\" data-base=\"{base}\">\
+<div><strong>Upload</strong> (PUT)</div>\
+<div style=\"margin-top:8px\">\
+<input type=\"file\" id=\"upload_files\" multiple />\
+<button type=\"button\" id=\"upload_btn\">Upload</button>\
+</div>\
+<div class=\"muted\" id=\"upload_status\" style=\"margin-top:8px\"></div>\
+</div>\
+<script>\
+(function(){{\
+const root=document.getElementById('upload');\
+const base=root.dataset.base; \
+const input=document.getElementById('upload_files');\
+const btn=document.getElementById('upload_btn');\
+const status=document.getElementById('upload_status');\
+btn.addEventListener('click', async () => {{\
+  const files = Array.from(input.files||[]); \
+  if(files.length===0){{status.textContent='No files selected.';return;}}\
+  btn.disabled=true; \
+  try {{\
+    for(const f of files){{\
+      status.textContent = 'Uploading ' + f.name + ' (' + f.size + ' bytes)...'; \
+      const url = base + encodeURIComponent(f.name); \
+      const resp = await fetch(url, {{method:'PUT', body:f}}); \
+      if(!resp.ok){{throw new Error('Upload failed: ' + resp.status + ' ' + resp.statusText);}}\
+    }}\
+    status.textContent='Upload complete. Refreshing...'; \
+    setTimeout(() => location.reload(), 300); \
+  }} catch(e) {{\
+    status.textContent = String(e); \
+  }} finally {{\
+    btn.disabled=false; \
+  }}\
+}});\
+}})();\
+</script>",
+        base = url::html_escape(&ensure_trailing_slash_owned(raw_url_path)),
+    ));
     body.push_str("<table>");
     body.push_str("<tr><td class=\"muted\">Name</td><td class=\"muted\">Size</td></tr>");
 
@@ -202,7 +307,7 @@ fn directory_listing_response(dir: &Path, raw_url_path: &str, decoded_url_path: 
             "-".to_string()
         } else {
             ent.metadata()
-                .map(|m| m.len().to_string())
+                .map(|m| human_size_bytes(m.len()))
                 .unwrap_or_else(|_| "-".to_string())
         };
 
@@ -254,6 +359,50 @@ fn guess_content_type_builtin(path: &Path) -> &'static str {
         "gif" => "image/gif",
         "rs" | "py" | "go" | "log" | "md" | "toml" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+fn guess_content_type(path: &Path) -> String {
+    let builtin = guess_content_type_builtin(path);
+    if builtin != "application/octet-stream" {
+        return builtin.to_string();
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if let Some(info) = minimime::lookup_by_filename(file_name) {
+        let is_binary = info.is_binary();
+        let mut ct = info.content_type;
+        if !ct.contains("charset=")
+            && !is_binary
+            && (ct.starts_with("text/")
+                || ct.eq_ignore_ascii_case("application/javascript")
+                || ct.eq_ignore_ascii_case("application/json"))
+        {
+            ct.push_str("; charset=utf-8");
+        }
+        return ct;
+    }
+    guess_content_type_builtin(path).to_string()
+}
+
+fn human_size_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut size = bytes as f64;
+    let mut unit = 0usize;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if size >= 10.0 {
+        format!("{:.0} {}", size, UNITS[unit])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit])
     }
 }
 

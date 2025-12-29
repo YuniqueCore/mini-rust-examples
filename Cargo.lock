@@ -712,6 +712,18 @@ dependencies = [
 [[package]]
 name = "httproxy"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ctrlc2",
+ "fern",
+ "httparse",
+ "log",
+ "mea",
+ "pastey",
+ "sarge",
+ "smol",
+]
 
 [[package]]
 name = "httpserver"
@@ -723,6 +735,7 @@ dependencies = [
  "fern",
  "log",
  "mea",
+ "minimime",
  "pastey",
  "sarge",
  "smol",
@@ -1063,6 +1076,12 @@ dependencies = [
  "serde_json",
  "tokio",
 ]
+
+[[package]]
+name = "minimime"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bcaa89828ea1e6ab547d9d61ae49f1f9336459b593f285ecc402af9152e16b2"
 
 [[package]]
 name = "mio"
