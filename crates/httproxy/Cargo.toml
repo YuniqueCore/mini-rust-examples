@@ -15,3 +15,4 @@ pastey.workspace = true
 sarge.workspace = true
 smol.workspace = true
 httparse.workspace = true
+ureq = "3.1.4"
