@@ -10,13 +10,13 @@ pub fn render_code_page(title: &str, language: Option<&str>, source: &str) -> Ve
 <html><head><meta charset=\"utf-8\">\
 <title>{title}</title>\
 <style>\
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}}\
-pre{{background:#0b1020;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto}}\
-.keyword{{color:#7dd3fc;font-weight:600}}\
+body{{font-family:sans-serif,system-ui,-apple-system,Segoe UI,Roboto;padding:16px;font-size: 16px}}\
+pre{{background:#27272a;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto}}\
+.keyword{{color:#fca5a5;font-weight:400}}\
 .comment{{color:#94a3b8}}\
 .literal{{color:#86efac}}\
 .glyph{{color:#fbbf24}}\
-.strong-identifier{{color:#e879f9;font-weight:600}}\
+.strong-identifier{{color:#7dd3fc;opacity:60;font-weight:400}}\
 .special-identifier{{color:#c4b5fd}}\
 </style>\
 </head><body>\
@@ -38,14 +38,14 @@ pub fn render_markdown_page(title: &str, markdown: &str) -> Vec<u8> {
 <html><head><meta charset=\"utf-8\">\
 <title>{title}</title>\
 <style>\
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5}}\
-pre{{background:#0b1020;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto}}\
+body{{font-family:sans-serif,system-ui,-apple-system,Segoe UI,Roboto;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5;font-size: 16px}}\
+pre{{background:#27272a;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto}}\
 code{{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}}\
-.keyword{{color:#7dd3fc;font-weight:600}}\
+.keyword{{color:#fca5a5;font-weight:400}}\
 .comment{{color:#94a3b8}}\
 .literal{{color:#86efac}}\
 .glyph{{color:#fbbf24}}\
-.strong-identifier{{color:#e879f9;font-weight:600}}\
+.strong-identifier{{color:#7dd3fc;opacity:60;font-weight:400}}\
 .special-identifier{{color:#c4b5fd}}\
 a{{text-decoration:none}} a:hover{{text-decoration:underline}}\
 </style>\

@@ -1,8 +1,35 @@
-use std::{collections::HashMap, fmt, path::Path};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display},
+    path::Path,
+};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TypeMappings {
     map: HashMap<String, TypeAction>,
+}
+
+impl Default for TypeMappings {
+    fn default() -> Self {
+        let map = HashMap::from_iter([
+            ("md".into(), TypeAction::Markdown),
+            ("rs".into(), TypeAction::Code),
+            ("toml".into(), TypeAction::Code),
+            ]);
+        Self { map }
+    }
+}
+
+impl TypeMappings {
+    pub fn default_value(&self) -> Option<String> {
+        let mappings: Vec<String> = self
+            .map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+
+        Some(mappings.join(";").to_string())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -13,6 +40,16 @@ pub enum TypeAction {
     Markdown,
     /// Serve the raw file bytes with the given Content-Type.
     Raw { content_type: String },
+}
+
+impl Display for TypeAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeAction::Code => write!(f, "{}", "code"),
+            TypeAction::Markdown => write!(f, "{}", "html"),
+            TypeAction::Raw { content_type } => write!(f, "{}", content_type),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,13 +84,8 @@ impl TypeMappings {
             })?;
 
             let lhs = lhs.trim();
-            if !lhs.starts_with('[') || !lhs.ends_with(']') {
-                return Err(TypeSpecParseError {
-                    message: format!("expected '[ext|ext]' on the left side, got: {lhs}"),
-                });
-            }
 
-            let exts_part = &lhs[1..lhs.len() - 1];
+            let exts_part = &lhs[..lhs.len()];
             let rhs = rhs.trim();
             if rhs.is_empty() {
                 return Err(TypeSpecParseError {
@@ -101,7 +133,7 @@ fn parse_action_for_ext(ext: &str, rhs: &str) -> Result<TypeAction, TypeSpecPars
     match lowered.as_str() {
         "code" => Ok(TypeAction::Code),
         // "html" is treated as "render markdown" for .md, otherwise raw HTML.
-        "html" => {
+        "html" | "markdown" | "md" => {
             if ext == "md" {
                 Ok(TypeAction::Markdown)
             } else {

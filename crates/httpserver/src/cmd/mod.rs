@@ -27,8 +27,8 @@ sarge! {
     /// log with color?
     #ok pub colored:bool = false,
 
-    /// Content-type & render mappings, e.g. -t "[rs|toml]=code;[md]=html"
-    #ok 't' pub types: TypeMappingsArg = TypeMappingsArg::default(),
+    /// Content-type & render mappings, e.g. -t "rs|toml=code;md=html;log=text"
+    #ok 't' pub types: TypeMappingsArg = TypeMappingsArg(TypeMappings::parse_spec("rs|toml=code;md=html").unwrap()),
 
     /// Optional basic auth in the form "name@password" (enables HTTP Basic auth).
     #ok 'a' pub auth: AuthArg = AuthArg::default(),
@@ -136,7 +136,7 @@ impl FromStr for ServePath {
 
 impl_deref_mut!(ServePath(PathBuf));
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone,Default)]
 pub struct TypeMappingsArg(TypeMappings);
 
 impl ArgumentType for TypeMappingsArg {
@@ -147,6 +147,10 @@ impl ArgumentType for TypeMappingsArg {
             None => Some(Ok(Self::default())),
             Some(v) => Some(TypeMappings::parse_spec(v).map(TypeMappingsArg)),
         }
+    }
+
+    fn help_default_value(value: &Self) -> Option<String> {
+        value.0.default_value()
     }
 }
 
@@ -167,6 +171,10 @@ impl ArgumentType for AuthArg {
             None => Some(Ok(Self::default())),
             Some(v) => Some(BasicAuth::parse_user_at_password(v).map(|a| AuthArg(Some(a)))),
         }
+    }
+
+    fn help_default_value(value: &Self) -> Option<String> {
+        Some(format!("{:?}",value.0)) 
     }
 }
 
