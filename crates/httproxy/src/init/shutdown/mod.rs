@@ -8,14 +8,14 @@ use mea::{condvar::Condvar, mutex::Mutex};
 
 mod ctrlc;
 
-pub fn init() ->Result<GracefulShutdown> {
+pub fn init() -> Result<GracefulShutdown> {
     let ctrlc = ctrlc::init()?;
     let shutdown = GracefulShutdown::new();
     termination(ctrlc, shutdown.clone());
     Ok(shutdown)
 }
 
-fn termination(ctrlc:ctrlc2::AsyncCtrlC, shutdown_for_signal:GracefulShutdown) {
+fn termination(ctrlc: ctrlc2::AsyncCtrlC, shutdown_for_signal: GracefulShutdown) {
     smol::spawn(async move {
         let _ = ctrlc.await;
         log::info!("Shutdown requested (Ctrl+C). Waiting for in-flight requests...");
@@ -23,7 +23,6 @@ fn termination(ctrlc:ctrlc2::AsyncCtrlC, shutdown_for_signal:GracefulShutdown) {
     })
     .detach();
 }
-
 
 #[derive(Clone, Debug)]
 pub(crate) struct GracefulShutdown {

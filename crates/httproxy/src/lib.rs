@@ -1,8 +1,4 @@
-use std::{str::FromStr, thread, time::Duration};
-
 use anyhow::Result;
-
-use crate::{cmd::LogLevel};
 
 mod cmd;
 mod common;
@@ -14,15 +10,8 @@ pub async fn run() -> Result<()> {
 
     let args = init::cmd::init()?;
 
-    let shutdown_clone = shutdown.clone();
-    // smol::spawn(async move {
-    //     let guard = shutdown_clone.inflight_guard();
-    //     thread::sleep(Duration::from_secs(5));
-    //     drop(guard);
-    // }).detach();
-
+    let bind_addr = *args.bind.expect("should has a valid bind address");
+    start::handle_local_target(bind_addr, &shutdown).await?;
     log::info!("Shutdown complete.");
     Ok(())
 }
-
-

@@ -2,7 +2,10 @@ use std::str::FromStr;
 
 use anyhow::Result;
 
-use crate::{cmd::{Args, LogLevel}, init::logger};
+use crate::{
+    cmd::{Args, LogLevel},
+    init::logger,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
