@@ -269,7 +269,12 @@ async fn forward_via_ureq(req: ClientRequest) -> Result<UpstreamResponse> {
         builder = builder.header("content-length", req.body.len().to_string());
 
         let request = builder.body(req.body)?;
-        let resp = ureq::run(request)?;
+        let agent: ureq::Agent = ureq::config::Config::builder()
+            .proxy(None)
+            .max_redirects(0)
+            .build()
+            .into();
+        let resp = agent.run(request)?;
 
         let status = resp.status().as_u16();
         let headers: Vec<(String, String)> = resp
@@ -319,6 +324,7 @@ fn should_skip_request_header(name: &str) -> bool {
     is_hop_by_hop_header(name)
         || name.eq_ignore_ascii_case("accept-encoding")
         || name.eq_ignore_ascii_case("content-length")
+        || name.eq_ignore_ascii_case("host")
 }
 
 fn should_skip_response_header(name: &str) -> bool {
