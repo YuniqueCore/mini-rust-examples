@@ -11,7 +11,10 @@ pub async fn run() -> Result<()> {
     let args = init::cmd::init()?;
 
     let bind_addr = *args.bind.expect("should has a valid bind address");
-    start::handle_local_target(bind_addr, &shutdown).await?;
+    let reverse_addr = *args
+        .reverse
+        .expect("should has a valid reverse bind address");
+    start::handle_local_target(bind_addr, reverse_addr, &shutdown).await?;
     log::info!("Shutdown complete.");
     Ok(())
 }
