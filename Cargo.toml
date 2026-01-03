@@ -15,7 +15,14 @@ reqwest = { workspace = true }
 
 
 [workspace]
-members = ["crates/async-net/*", "crates/crypto-net/*", "crates/httpclient", "crates/httproxy", "crates/httpserver"]
+members = [
+    "crates/async-net/*",
+    "crates/crypto-net/*",
+    "crates/httpclient",
+    "crates/httproxy",
+    "crates/rproxy",
+    "crates/httpserver",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -30,15 +37,25 @@ serde_json = "1"
 log = "0.4"
 
 anyhow = "1"
-chrono = {version = "0.4",default-features = false, features = ["alloc","clock","now"]}
-ctrlc2 ={version = "3",default-features = false, features = ["async","termination"]} 
-fern = {version = "0.7",default-features = false,features = ["chrono","colored"]}
+chrono = { version = "0.4", default-features = false, features = [
+    "alloc",
+    "clock",
+    "now",
+] }
+ctrlc2 = { version = "3", default-features = false, features = [
+    "async",
+    "termination",
+] }
+fern = { version = "0.7", default-features = false, features = [
+    "chrono",
+    "colored",
+] }
 mea = "0.5"
 pastey = "0.2"
-sarge ={ path = "/Users/unic/dev/projs/rs/sarge"}
+sarge = { path = "/Users/unic/dev/projs/rs/sarge" }
 smol = "2"
 
-httparse ={ version = "1"}
+httparse = { version = "1" }
 
 
 [profile.release]
@@ -50,11 +67,11 @@ strip = "debuginfo"
 
 [profile.minirelease]
 inherits = "release"
-opt-level         = "z"
-lto               = "fat"
-codegen-units     = 1
-panic             = "abort"
-strip             = "symbols"
-overflow-checks   = false
-debug-assertions  = false
-incremental       = false
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+debug-assertions = false
+incremental = false
